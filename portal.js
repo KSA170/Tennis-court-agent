@@ -35,6 +35,13 @@ function createFormUrl(courtLabel, dateStr, hour, requestData) {
   return `${BASE}/Online/ReservationsApi/CreateReservation?${q.toString()}`;
 }
 
+/** All distinct requestData-looking tokens in a blob of HTML/JS. */
+function extractRequestDataTokens(text) {
+  const matches = [...text.matchAll(/[Rr]equest[Dd]ata["'=:\s]{1,4}([A-Za-z0-9+/=%]{40,})/g)]
+    .map((m) => { try { return decodeURIComponent(m[1]); } catch { return m[1]; } });
+  return [...new Set(matches)];
+}
+
 /**
  * Load the scheduler page and extract the per-session tokens the booking flow needs.
  * requestData is embedded in the Kendo scheduler's data-source URLs / JS config.
@@ -43,16 +50,49 @@ export async function getSessionTokens(page) {
   await page.goto(`${BASE}/Online/Reservations/Bookings/${ORG_ID}?sId=${CUSTOM_SCHEDULER_ID}`,
     { waitUntil: 'networkidle' }).catch(() => {});
   const html = await page.content();
-  const matches = [...html.matchAll(/[Rr]equest[Dd]ata["'=:\s]{1,4}([A-Za-z0-9+/=%]{40,})/g)]
-    .map((m) => { try { return decodeURIComponent(m[1]); } catch { return m[1]; } });
+  const candidates = extractRequestDataTokens(html);
   // Prefer the longest distinct token (the create/get-list family is longer).
-  const requestData = [...new Set(matches)].sort((a, b) => b.length - a.length)[0] || null;
+  const requestData = candidates.slice().sort((a, b) => b.length - a.length)[0] || null;
   let verif = await page.locator('input[name="__RequestVerificationToken"]').first()
     .inputValue().catch(() => null);
   if (!verif) verif = (html.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/) || [])[1] || null;
-  console.log(`[tokens] requestData candidates=${matches.length} ` +
-    `picked=${requestData ? requestData.slice(0, 24) + '…(len ' + requestData.length + ')' : 'NONE'} verif=${verif ? 'yes' : 'no'}`);
+  console.log(`[tokens] requestData candidates=${candidates.length}` +
+    candidates.map((t, i) => ` #${i}=${t.slice(0, 20)}…(len ${t.length})`).join('') +
+    ` picked=${requestData ? requestData.slice(0, 20) + '…' : 'NONE'} verif=${verif ? 'yes' : 'no'}`);
   return { requestData, verif };
+}
+
+/**
+ * Replays the GET the browser made right before the create-form fetch (HAR shows
+ * them back to back). It likely primes server-side state for the create form, and
+ * its response may carry the requestData token the form URL needs — if found,
+ * that token is returned and takes precedence over the scheduler-page one.
+ */
+async function primeCourtsView(ctx, courtLabel, dateStr, hour) {
+  const start = clubInstant(dateStr, hour);
+  const end = clubInstant(dateStr, hour + 1);
+  const q = new URLSearchParams({
+    start: clubDateToString(start), end: clubDateToString(end),
+    customSchedulerId: CUSTOM_SCHEDULER_ID, courtLabel,
+    returnUrlStartPage: `${BASE}/Online/Reservations/Bookings/${ORG_ID}?sId=${CUSTOM_SCHEDULER_ID}`,
+  });
+  const url = `${BASE}/Online/Reservations/CreateReservationCourtsView/${ORG_ID}?${q.toString()}`;
+  const res = await ctx.request.get(url, {
+    headers: {
+      'x-requested-with': 'XMLHttpRequest', accept: '*/*',
+      referer: `${BASE}/Online/Reservations/Bookings/${ORG_ID}?sId=${CUSTOM_SCHEDULER_ID}`,
+    },
+  }).catch(() => null);
+  if (!res) { console.log(`[courts-view] ${courtLabel}: request failed`); return null; }
+  const body = await res.text().catch(() => '');
+  const tokens = extractRequestDataTokens(body);
+  console.log(`[courts-view] ${courtLabel}: status=${res.status()} len=${body.length} tokens=${tokens.length}` +
+    tokens.map((t) => ` ${t.slice(0, 20)}…(len ${t.length})`).join(''));
+  if (!tokens.length && body.length > 0 && body.length < 3000 && !primeCourtsView._dumped) {
+    primeCourtsView._dumped = true;
+    console.log('[courts-view] body snippet:', body.replace(/\s+/g, ' ').slice(0, 800));
+  }
+  return tokens.sort((a, b) => b.length - a.length)[0] || null;
 }
 
 /**
@@ -96,8 +136,11 @@ async function scrapeFormViaAjax(page, ctx, url, anchorSelector, label, extraHea
 
 /** Load the create form for a court/time and scrape its exact submission fields. */
 async function scrapeCreateForm(page, ctx, courtLabel, dateStr, hour, requestData) {
+  // HAR ordering: CreateReservationCourtsView immediately precedes the create-form
+  // GET. Prefer a token harvested from its response over the scheduler-page one.
+  const primed = await primeCourtsView(ctx, courtLabel, dateStr, hour);
   return scrapeFormViaAjax(
-    page, ctx, createFormUrl(courtLabel, dateStr, hour, requestData),
+    page, ctx, createFormUrl(courtLabel, dateStr, hour, primed || requestData),
     'input[name="RequestData"], input[name="ReservationTypeId"]',
     `create ${courtLabel}`,
     { referer: `${BASE}/Online/Reservations/Bookings/${ORG_ID}?sId=${CUSTOM_SCHEDULER_ID}` }
