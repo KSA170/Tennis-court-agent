@@ -1,9 +1,5 @@
 name: Book tennis court
 
-# Court Reserve releases the new day at 7:00 AM America/Toronto. GitHub cron is
-# UTC and drifts several minutes under load, so we start EARLY and let the script
-# sleep to the exact second. Multiple staggered starts + a queue (concurrency)
-# mean that even if some runners boot late, an earlier one is already armed.
 on:
   workflow_dispatch:
     inputs:
@@ -16,19 +12,15 @@ on:
         type: boolean
         default: false
   schedule:
-    # --- EDT (summer, UTC-4): 7:00 local = 11:00 UTC. Arm 10:35–10:53 UTC ---
     - cron: '35 10 * * *'
     - cron: '42 10 * * *'
     - cron: '48 10 * * *'
     - cron: '53 10 * * *'
-    # --- EST (winter, UTC-5): 7:00 local = 12:00 UTC. Arm 11:35–11:53 UTC ---
     - cron: '35 11 * * *'
     - cron: '42 11 * * *'
     - cron: '48 11 * * *'
     - cron: '53 11 * * *'
 
-# Only one run active at a time; standbys queue and take over if the holder dies.
-# Do NOT cancel in progress — the holder is the one doing the booking.
 concurrency:
   group: book-tennis-court
   cancel-in-progress: false
@@ -44,12 +36,22 @@ jobs:
         with:
           node-version: '20'
 
-      # Works whether the app is at the repo root or inside tennis-agent/.
+      # Find the code wherever the upload put it, and make sure an ESM
+      # package.json sits beside it. Prints the repo tree for diagnosis.
       - name: Locate app directory
         run: |
-          if [ -f tennis-agent/package.json ]; then echo "APPDIR=tennis-agent" >> "$GITHUB_ENV";
-          elif [ -f package.json ]; then echo "APPDIR=." >> "$GITHUB_ENV";
-          else echo "::error::Could not find package.json (looked in ./ and ./tennis-agent)"; ls -la; exit 1; fi
+          echo "=== repo tree ==="
+          find . -not -path '*/node_modules/*' -not -path '*/.git/*' -maxdepth 4 | sort
+          echo "================="
+          ENTRY=$(find . -path '*/src/index.js' -not -path '*/node_modules/*' | head -1)
+          if [ -z "$ENTRY" ]; then echo "::error::src/index.js not found anywhere in the repo"; exit 1; fi
+          APPDIR=$(dirname "$(dirname "$ENTRY")")
+          echo "APPDIR=$APPDIR" >> "$GITHUB_ENV"
+          echo "Using APPDIR=$APPDIR"
+          if [ ! -f "$APPDIR/package.json" ]; then
+            echo '{"name":"tennis-court-agent","private":true,"type":"module"}' > "$APPDIR/package.json"
+            echo "No package.json beside src/ — wrote a minimal ESM one."
+          fi
 
       - name: Install dependencies
         run: cd "$APPDIR" && npm install --no-save playwright@^1.48.0
