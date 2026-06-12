@@ -12,6 +12,15 @@ opens (7:00 AM America/Toronto, 6 days out). Single game vs **Angad Dev Singh** 
 book the 9 PM. First-come (not a lottery). Login is username+password (a "Continue with
 Google" button also exists but we use the password form).
 
+## STATUS: end-to-end VERIFIED (2026-06-12)
+A live run booked Court 1 on 2026-06-18 2 PM vs Angad (`{"stage":"booked"}`) via the
+target_date/target_hour workflow inputs — login, tokens, form render, payload, and the
+real POST all confirmed. (That test reservation should be cancelled in the portal.)
+A live 9 PM attempt returned the genuine per-court "Sorry, no available courts for the
+time requested." — that's what book-failed looks like when slots are taken. Remaining
+unknowns: the exact wording of the at-cap error (CAP_HINTS regex untested live) and
+Karam's member record.
+
 ## What WORKS (verified on live runs)
 - **Login** — `src/auth.js`. Form fields are `input[name="email"]` / `input[name="password"]`,
   submit button text "Continue". Lands on `/Online/Portal/Index/6357`.
@@ -70,11 +79,17 @@ resolved live by name.
 - Each test cycle = push → user clicks Run workflow → read the `[tennis-agent] result: {…}`
   line + any DIAGNOSTIC blocks. (Cannot read the user's Actions logs directly — they paste.)
 
+## Timed (cron) path: prepare → sleep → fire
+`book.js` is split so the cron run is fast at the open: `prepareBooking` (launch, login,
+idempotency check, opponent, session tokens) runs while ARMING, before the sleep;
+`fireBooking` (courts-view + form + POST per court, cap handling) runs at 7:00:00.000.
+Manual runs use `runBooking` = prepare + fire immediately. The first booking attempt now
+lands ~1s after open instead of ~20s (login etc. no longer eats into the race).
+
 ## Next concrete step
-Form rendering works; the only untested step is the real booking POST. Dry runs now print
-a `DRY-RUN PAYLOAD` block (field names; values for the booking-mechanics fields only —
-the Actions logs are public). Verify the payload looks right (server fields like
-RequestData/__RequestVerificationToken present with non-zero lengths, Date/StartTime/
-CourtId/ReservationTypeId correct), then do a live run (dry_run unchecked) and read the
-`[tennis-agent] result:` line. Note a live manual run books FOR REAL (and may trigger the
-cancel-a-10 PM path if at the 4-reservation cap).
+Everything is verified except the cron path's timing in production. Let the 7 AM
+schedule run for real and check the Actions log: the arming line, the sleep duration,
+and the result. If losing the race to other bots, next optimization is pre-rendering the
+create form for the first-preference court during arming so the fire step is a single
+POST. If `cap-blocked`/CAP_HINTS misfires at the cap, capture the real error message
+from the log and tighten the regex.

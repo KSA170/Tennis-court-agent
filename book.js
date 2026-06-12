@@ -11,47 +11,62 @@ import { parseHour } from './time.js';
 import { membersConfigured } from './constants.js';
 
 /**
- * @returns {Promise<{ok:boolean, stage:string, date:string, hour:string,
- *   court?:string, opponent?:string, cancelled?:string, reason?:string, error?:string}>}
+ * Phase 1 — everything that can be done BEFORE the window opens: launch, log in,
+ * idempotency check, opponent resolution, session tokens. Returns either
+ * `{ browser, done }` (terminal result, nothing to fire) or a primed context for
+ * fireBooking. Caller owns `browser` and must close it.
  */
-export async function runBooking(cfg, targetDate) {
+export async function prepareBooking(cfg, targetDate) {
   const base = { date: targetDate, hour: cfg.targetHour };
   if (!cfg.discover && !membersConfigured()) {
-    return { ok: false, stage: 'not-configured', ...base,
-      reason: 'CR_MEMBERS_JSON secret is missing or has no "self" member — set it (see README).' };
+    return { done: { ok: false, stage: 'not-configured', ...base,
+      reason: 'CR_MEMBERS_JSON secret is missing or has no "self" member — set it (see README).' } };
   }
 
   const browser = await chromium.launch({ headless: cfg.headless });
-  let ctx, page;
-
   try {
-    ({ ctx, page } = await login(browser, cfg));
+    const { ctx, page } = await login(browser, cfg);
 
     // Discovery mode: dump the live JSON shapes (availability, my-bookings, member
     // search) so the parsers can be confirmed, then stop.
     if (cfg.discover) {
       await dumpDiscovery(page, ctx, cfg);
-      return { ok: true, stage: 'discover', ...base, reason: 'dumped live JSON shapes' };
+      return { browser, done: { ok: true, stage: 'discover', ...base, reason: 'dumped live JSON shapes' } };
     }
 
     const targetHour = parseHour(cfg.targetHour);   // 21
-    const cancelHour = parseHour(cfg.cancelHourToFreeSlot); // 22
 
     // Idempotency — never double-book the same 9 PM slot.
-    let bookings = await getMyBookings(page);
+    const bookings = await getMyBookings(page);
     if (hasSlot(bookings, targetDate, targetHour)) {
-      return { ok: true, stage: 'already-booked', ...base, reason: 'reservation already exists' };
+      return { browser, done: { ok: true, stage: 'already-booked', ...base, reason: 'reservation already exists' } };
     }
 
     // Resolve an opponent (first one that exists in the club directory).
     const opponent = await firstOpponent(ctx, cfg.opponents);
     if (!opponent) {
-      return { ok: false, stage: 'no-opponent', ...base,
-        reason: `none of [${cfg.opponents.join(', ')}] could be found in the club directory` };
+      return { browser, done: { ok: false, stage: 'no-opponent', ...base,
+        reason: `none of [${cfg.opponents.join(', ')}] could be found in the club directory` } };
     }
 
     // Per-session token the create-reservation form requires.
     const { requestData } = await getSessionTokens(page);
+
+    return { browser, ctx, page, base, targetHour, bookings, opponent, requestData };
+  } catch (err) {
+    return { browser, done: { ok: false, stage: 'error', ...base, error: String(err?.message ?? err) } };
+  }
+}
+
+/**
+ * Phase 2 — the time-critical part: per-court form fetch + POST, with the
+ * max-reservation cap (cancel a 10 PM, retry once) handled.
+ */
+export async function fireBooking(prep, cfg, targetDate) {
+  const { ctx, page, base, targetHour, opponent, requestData } = prep;
+  let { bookings } = prep;
+  try {
+    const cancelHour = parseHour(cfg.cancelHourToFreeSlot); // 22
 
     // First pass: try to grab a court.
     let booked = await tryAllCourts(page, ctx, cfg, targetDate, targetHour, opponent, requestData);
@@ -81,8 +96,21 @@ export async function runBooking(cfg, targetDate) {
     return { ok: false, stage: 'book-failed', ...base, cancelled, reason: booked.reason };
   } catch (err) {
     return { ok: false, stage: 'error', ...base, error: String(err?.message ?? err) };
+  }
+}
+
+/**
+ * Prepare + fire in one shot (run-now / discovery / dry-run paths).
+ * @returns {Promise<{ok:boolean, stage:string, date:string, hour:string,
+ *   court?:string, opponent?:string, cancelled?:string, reason?:string, error?:string}>}
+ */
+export async function runBooking(cfg, targetDate) {
+  const prep = await prepareBooking(cfg, targetDate);
+  try {
+    if (prep.done) return prep.done;
+    return await fireBooking(prep, cfg, targetDate);
   } finally {
-    await browser.close();
+    await prep.browser?.close();
   }
 }
 
