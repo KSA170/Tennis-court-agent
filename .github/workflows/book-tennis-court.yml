@@ -76,6 +76,8 @@ jobs:
           RESEND_FROM: ${{ vars.RESEND_FROM }}
           CR_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           CR_DISCOVER: ${{ inputs.discover && '1' || '' }}
+          # Manual runs fire immediately; only the 7 AM schedule does timed arming.
+          CR_FORCE_NOW: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: cd "$APPDIR" && node "$ENTRYFILE"
 
       - name: Upload debug artifacts on failure
