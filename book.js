@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 import { login } from './auth.js';
 import {
   bookCourt, resolveOpponent, getMyBookings, cancelReservation,
-  courtsToTry, dumpDiscovery,
+  courtsToTry, dumpDiscovery, getSessionTokens,
 } from './portal.js';
 import { parseHour } from './time.js';
 import { membersConfigured } from './constants.js';
@@ -50,8 +50,11 @@ export async function runBooking(cfg, targetDate) {
         reason: `none of [${cfg.opponents.join(', ')}] could be found in the club directory` };
     }
 
+    // Per-session token the create-reservation form requires.
+    const { requestData } = await getSessionTokens(page);
+
     // First pass: try to grab a court.
-    let booked = await tryAllCourts(page, ctx, cfg, targetDate, targetHour, opponent);
+    let booked = await tryAllCourts(page, ctx, cfg, targetDate, targetHour, opponent, requestData);
     let cancelled;
 
     // If the club's cap blocked us, cancel a 10 PM reservation and retry once.
@@ -68,7 +71,7 @@ export async function runBooking(cfg, targetDate) {
           reason: `could not cancel ${cfg.cancelHourToFreeSlot} reservation ${victim.id}: ${cancelRes.reason}` };
       }
       cancelled = describeBooking(victim);
-      booked = await tryAllCourts(page, ctx, cfg, targetDate, targetHour, opponent);
+      booked = await tryAllCourts(page, ctx, cfg, targetDate, targetHour, opponent, requestData);
     }
 
     if (booked.ok) {
@@ -84,11 +87,12 @@ export async function runBooking(cfg, targetDate) {
 }
 
 /** Attempt each court in preference order; first success wins, cap aborts early. */
-async function tryAllCourts(page, ctx, cfg, dateStr, hour, opponent) {
+async function tryAllCourts(page, ctx, cfg, dateStr, hour, opponent, requestData) {
   const reasons = [];
   for (const court of courtsToTry(cfg.courtPreference)) {
     const r = await bookCourt(page, ctx, {
-      courtLabel: court.label, courtId: court.id, dateStr, hour, opponent, dryRun: cfg.dryRun,
+      courtLabel: court.label, courtId: court.id, dateStr, hour, opponent,
+      dryRun: cfg.dryRun, requestData,
     });
     if (r.ok) return r;
     if (r.blockedByCap) return r;           // cap is global — no point trying other courts
