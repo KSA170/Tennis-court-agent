@@ -36,12 +36,33 @@ function createFormUrl(courtLabel, dateStr, hour) {
 /** Load the create form for a court/time and scrape its exact submission fields. */
 async function scrapeCreateForm(page, courtLabel, dateStr, hour) {
   await page.goto(createFormUrl(courtLabel, dateStr, hour), { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('networkidle').catch(() => {});
+  // The form (or its RequestData hidden input) may be injected by script after load.
+  await page.waitForSelector('input[name="RequestData"], input[name="ReservationTypeId"], form', { timeout: 8000 }).catch(() => {});
+
   const fields = await page.evaluate(() => {
     const anchor = document.querySelector('input[name="RequestData"], input[name="ReservationTypeId"]');
     const form = anchor && anchor.closest('form');
     if (!form) return null;
     return [...new FormData(form).entries()].map(([name, value]) => ({ name, value: String(value) }));
   });
+
+  if (!fields && !scrapeCreateForm._dumped) {
+    scrapeCreateForm._dumped = true; // diagnose only the first failure to avoid log spam
+    const info = await page.evaluate(() => ({
+      title: document.title,
+      formCount: document.querySelectorAll('form').length,
+      inputNames: [...document.querySelectorAll('input')].slice(0, 40).map((i) => i.name || i.id || i.type),
+      bodyText: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 500),
+    })).catch(() => ({}));
+    console.log(`\n===== CREATE-FORM DIAGNOSTIC (${courtLabel}) =====`);
+    console.log('url   :', page.url());
+    console.log('title :', info.title);
+    console.log('forms :', info.formCount, '| inputs:', JSON.stringify(info.inputNames));
+    console.log('text  :', info.bodyText);
+    console.log('html  :', (await page.content().catch(() => '')).replace(/\s+/g, ' ').slice(0, 1200));
+    console.log('================================================\n');
+  }
   return fields; // null if the form didn't render (slot unavailable / not yet open)
 }
 
