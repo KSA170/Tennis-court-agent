@@ -1,0 +1,16 @@
+{
+  "name": "tennis-court-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Auto-reserves a 9 PM tennis court at Don Mills Tennis Club via the Court Reserve portal.",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "book": "node src/index.js",
+    "dry-run": "CR_DRY_RUN=1 node src/index.js",
+    "now": "CR_FORCE_NOW=1 node src/index.js"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}
