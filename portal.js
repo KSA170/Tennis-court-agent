@@ -33,37 +33,49 @@ function createFormUrl(courtLabel, dateStr, hour) {
   return `${BASE}/Online/ReservationsApi/CreateReservation?${q.toString()}`;
 }
 
-/** Load the create form for a court/time and scrape its exact submission fields. */
-async function scrapeCreateForm(page, courtLabel, dateStr, hour) {
-  await page.goto(createFormUrl(courtLabel, dateStr, hour), { waitUntil: 'domcontentloaded' });
-  await page.waitForLoadState('networkidle').catch(() => {});
-  // The form (or its RequestData hidden input) may be injected by script after load.
-  await page.waitForSelector('input[name="RequestData"], input[name="ReservationTypeId"], form', { timeout: 8000 }).catch(() => {});
+/**
+ * Fetch a server-rendered form fragment as the portal does — via AJAX (the
+ * X-Requested-With header is required; a plain navigation returns an empty body).
+ * Loads the HTML into the page (scripts stripped) and returns the form's named
+ * fields exactly as the browser would submit them.
+ */
+async function scrapeFormViaAjax(page, ctx, url, anchorSelector, label) {
+  const res = await ctx.request.get(url, { headers: { 'x-requested-with': 'XMLHttpRequest' } });
+  const ok = res.ok();
+  let html = ok ? await res.text() : '';
+  const looksRight = new RegExp(anchorSelector.split(',')[0].match(/name="([^"]+)"/)?.[1] || 'RequestData').test(html);
 
-  const fields = await page.evaluate(() => {
-    const anchor = document.querySelector('input[name="RequestData"], input[name="ReservationTypeId"]');
-    const form = anchor && anchor.closest('form');
-    if (!form) return null;
-    return [...new FormData(form).entries()].map(([name, value]) => ({ name, value: String(value) }));
-  });
-
-  if (!fields && !scrapeCreateForm._dumped) {
-    scrapeCreateForm._dumped = true; // diagnose only the first failure to avoid log spam
-    const info = await page.evaluate(() => ({
-      title: document.title,
-      formCount: document.querySelectorAll('form').length,
-      inputNames: [...document.querySelectorAll('input')].slice(0, 40).map((i) => i.name || i.id || i.type),
-      bodyText: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 500),
-    })).catch(() => ({}));
-    console.log(`\n===== CREATE-FORM DIAGNOSTIC (${courtLabel}) =====`);
-    console.log('url   :', page.url());
-    console.log('title :', info.title);
-    console.log('forms :', info.formCount, '| inputs:', JSON.stringify(info.inputNames));
-    console.log('text  :', info.bodyText);
-    console.log('html  :', (await page.content().catch(() => '')).replace(/\s+/g, ' ').slice(0, 1200));
-    console.log('================================================\n');
+  if (!ok || !looksRight || html.length < 50) {
+    if (!scrapeFormViaAjax._dumped) {
+      scrapeFormViaAjax._dumped = true;
+      console.log(`\n===== FORM-FETCH DIAGNOSTIC (${label}) =====`);
+      console.log('status:', res.status(), '| length:', html.length);
+      console.log('snippet:', html.replace(/\s+/g, ' ').slice(0, 1000));
+      console.log('==========================================\n');
+    }
+    return null;
   }
-  return fields; // null if the form didn't render (slot unavailable / not yet open)
+
+  await page.setContent(html.replace(/<script[\s\S]*?<\/script>/gi, ''), { waitUntil: 'domcontentloaded' });
+  return page.evaluate((sel) => {
+    const anchor = document.querySelector(sel);
+    const scope = (anchor && anchor.closest('form')) || document;
+    const out = [];
+    scope.querySelectorAll('input[name], select[name], textarea[name]').forEach((el) => {
+      if ((el.type === 'checkbox' || el.type === 'radio') && !el.checked) return;
+      out.push({ name: el.name, value: el.value ?? '' });
+    });
+    return out.length ? out : null;
+  }, anchorSelector);
+}
+
+/** Load the create form for a court/time and scrape its exact submission fields. */
+async function scrapeCreateForm(page, ctx, courtLabel, dateStr, hour) {
+  return scrapeFormViaAjax(
+    page, ctx, createFormUrl(courtLabel, dateStr, hour),
+    'input[name="RequestData"], input[name="ReservationTypeId"]',
+    `create ${courtLabel}`
+  );
 }
 
 /**
@@ -71,7 +83,7 @@ async function scrapeCreateForm(page, courtLabel, dateStr, hour) {
  * @returns {{ok:boolean, blockedByCap:boolean, court?:string, opponent?:string, reason?:string}}
  */
 export async function bookCourt(page, ctx, { courtLabel, courtId, dateStr, hour, opponent, dryRun }) {
-  const scraped = await scrapeCreateForm(page, courtLabel, dateStr, hour);
+  const scraped = await scrapeCreateForm(page, ctx, courtLabel, dateStr, hour);
   if (!scraped) return { ok: false, blockedByCap: false, reason: `create form did not render for ${courtLabel}` };
 
   // Start from the server's own fields, then enforce our booking specifics.
@@ -225,14 +237,12 @@ function parseBookings(data) {
 // ---------------------------------------------------------------------------
 
 export async function cancelReservation(page, ctx, reservationId, { reason = 'Weather', dryRun } = {}) {
-  await page.goto(`${BASE}/Online/MyProfile/CancelReservation/${ORG_ID}?reservationId=${reservationId}`,
-    { waitUntil: 'domcontentloaded' });
-  const fields = await page.evaluate(() => {
-    const anchor = document.querySelector('input[name="SelectedReservation.Id"]');
-    const form = anchor && anchor.closest('form');
-    if (!form) return null;
-    return [...new FormData(form).entries()].map(([name, value]) => ({ name, value: String(value) }));
-  });
+  const fields = await scrapeFormViaAjax(
+    page, ctx,
+    `${BASE}/Online/MyProfile/CancelReservation/${ORG_ID}?reservationId=${reservationId}`,
+    'input[name="SelectedReservation.Id"]',
+    `cancel ${reservationId}`
+  );
   if (!fields) return { ok: false, reason: `cancel form did not render for ${reservationId}` };
 
   const params = new URLSearchParams();
