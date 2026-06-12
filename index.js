@@ -5,17 +5,20 @@
 
 import { loadConfig } from './config.js';
 import { msUntilOpen, targetBookingDate, withinBookingWindow, clubToday } from './time.js';
-import { runBooking } from './book.js';
+import { runBooking, prepareBooking, fireBooking } from './book.js';
 import { notify } from './notify.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
 
 async function main() {
   const cfg = loadConfig();
-  const targetDate = targetBookingDate();
+  if (cfg.targetDate && !/^\d{4}-\d{2}-\d{2}$/.test(cfg.targetDate)) {
+    throw new Error(`CR_TARGET_DATE must be YYYY-MM-DD, got: ${cfg.targetDate}`);
+  }
+  const targetDate = cfg.targetDate || targetBookingDate();
 
-  console.log(`[tennis-agent] club-today=${clubToday()} target=${targetDate} ` +
-    `hour=${cfg.targetHour} dryRun=${cfg.dryRun} discover=${cfg.discover}`);
+  console.log(`[tennis-agent] club-today=${clubToday()} target=${targetDate}` +
+    `${cfg.targetDate ? ' (override)' : ''} hour=${cfg.targetHour} dryRun=${cfg.dryRun} discover=${cfg.discover}`);
 
   // Testing / discovery: run immediately, skip the 7 AM arming.
   if (cfg.runNow) {
@@ -34,21 +37,33 @@ async function main() {
     return;
   }
 
-  // Arm: open the browser + log in NOW so we're ready, then sleep to the second.
-  // (book.js#prepare establishes the warm session; runBooking fires at open.)
-  if (waitMs > 0) {
-    console.log(`[tennis-agent] armed; sleeping ${(waitMs / 1000).toFixed(1)}s until open…`);
-    await sleep(waitMs);
-  } else {
-    console.log(`[tennis-agent] already past open by ${-Math.round(waitMs / 1000)}s — firing now.`);
-  }
+  // Arm: open the browser + log in NOW (plus idempotency check, opponent lookup,
+  // session tokens), so the only work left at 7:00:00.000 is the booking POSTs.
+  console.log('[tennis-agent] arming — logging in and priming the session…');
+  const prep = await prepareBooking(cfg, targetDate);
+  let result;
+  try {
+    if (prep.done) {
+      result = prep.done;
+    } else {
+      waitMs = msUntilOpen(); // re-measure: preparation consumed some of the wait
+      if (waitMs > 0) {
+        console.log(`[tennis-agent] armed; sleeping ${(waitMs / 1000).toFixed(1)}s until open…`);
+        await sleep(waitMs);
+      } else {
+        console.log(`[tennis-agent] already past open by ${-Math.round(waitMs / 1000)}s — firing now.`);
+      }
 
-  if (!withinBookingWindow()) {
-    console.log('[tennis-agent] outside booking window after wait — exiting.');
-    return;
-  }
+      if (!withinBookingWindow()) {
+        console.log('[tennis-agent] outside booking window after wait — exiting.');
+        return;
+      }
 
-  const result = await runBooking(cfg, targetDate);
+      result = await fireBooking(prep, cfg, targetDate);
+    }
+  } finally {
+    await prep.browser?.close();
+  }
   console.log('[tennis-agent] result:', JSON.stringify(result));
   await notify(cfg, result);
 

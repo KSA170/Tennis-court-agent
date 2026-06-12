@@ -11,6 +11,14 @@ on:
         description: 'Discovery: log in, dump live JSON shapes, and exit'
         type: boolean
         default: false
+      target_date:
+        description: 'One-off date override, YYYY-MM-DD (default: today + 6 days)'
+        type: string
+        default: ''
+      target_hour:
+        description: 'One-off hour override, e.g. "8:00 PM" (default: 9:00 PM)'
+        type: string
+        default: ''
   schedule:
     - cron: '35 10 * * *'
     - cron: '42 10 * * *'
@@ -64,7 +72,8 @@ jobs:
           CR_USERNAME: ${{ secrets.CR_USERNAME }}
           CR_PASSWORD: ${{ secrets.CR_PASSWORD }}
           CR_MEMBERS_JSON: ${{ secrets.CR_MEMBERS_JSON }}
-          CR_TARGET_HOUR: ${{ vars.CR_TARGET_HOUR }}
+          CR_TARGET_HOUR: ${{ inputs.target_hour || vars.CR_TARGET_HOUR }}
+          CR_TARGET_DATE: ${{ inputs.target_date }}
           CR_DURATION_MIN: ${{ vars.CR_DURATION_MIN }}
           CR_RESERVATION_TYPE: ${{ vars.CR_RESERVATION_TYPE }}
           CR_COURT_PREFERENCE: ${{ vars.CR_COURT_PREFERENCE }}

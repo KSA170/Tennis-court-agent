@@ -12,6 +12,15 @@ opens (7:00 AM America/Toronto, 6 days out). Single game vs **Angad Dev Singh** 
 book the 9 PM. First-come (not a lottery). Login is username+password (a "Continue with
 Google" button also exists but we use the password form).
 
+## STATUS: end-to-end VERIFIED (2026-06-12)
+A live run booked Court 1 on 2026-06-18 2 PM vs Angad (`{"stage":"booked"}`) via the
+target_date/target_hour workflow inputs — login, tokens, form render, payload, and the
+real POST all confirmed. (That test reservation should be cancelled in the portal.)
+A live 9 PM attempt returned the genuine per-court "Sorry, no available courts for the
+time requested." — that's what book-failed looks like when slots are taken. Remaining
+unknowns: the exact wording of the at-cap error (CAP_HINTS regex untested live) and
+Karam's member record.
+
 ## What WORKS (verified on live runs)
 - **Login** — `src/auth.js`. Form fields are `input[name="email"]` / `input[name="password"]`,
   submit button text "Continue". Lands on `/Online/Portal/Index/6357`.
@@ -29,31 +38,14 @@ Google" button also exists but we use the password form).
 - **Cancel** — `cancelReservation` POSTs `/Online/MyProfile/CancelReservation/6357`
   (form scraped from the cancel fragment); returns `{"isValid":true}`.
 
-## The ONE remaining blocker: rendering the create-reservation form
-`GET /Online/ReservationsApi/CreateReservation?...` returns an **empty body** for us.
-From the HAR, the browser's working request:
-- was an **AJAX** call (`x-requested-with: XMLHttpRequest`), and
-- carried a **`requestData` session token** in the query string (a long base64-ish blob,
-  e.g. `BOYDb7t…`), and
-- was preceded by `GET /Online/Reservations/CreateReservationCourtsView/6357?start=…&end=…
-  &customSchedulerId=1218&courtLabel=Court 2&returnUrlStartPage=…?sId=1218`
-  (referer `…/Online/Reservations/Bookings/6357?sId=1218`).
-
-**Current attempt** (`getSessionTokens` in `src/portal.js`): load the Bookings scheduler
-page, regex `requestData` out of the Kendo data-source URLs / JS, and pass it on the
-create-form URL (with a referer header). `[tokens]` log line reports whether a token was
-found and its length.
-
-**If token replay keeps returning empty**, the likely culprits, in order:
-1. `requestData` must come from / be primed by `CreateReservationCourtsView` first
-   (call that GET, then the CreateReservation GET) — the HAR did both, back to back.
-2. There are multiple `requestData` blobs (member-expanded vs get-list vs create differ
-   after a shared prefix) — we may be picking the wrong one; print all candidates.
-3. The token is built in JS at click-time, not present statically — then **pivot to
-   driving the scheduler UI**: navigate `/Online/Reservations/Bookings/6357?sId=1218`,
-   move the Kendo scheduler to the target date, click the 9 PM cell for a court, fill the
-   modal (ReservationType "Singles", add opponent via the "members to play with" Kendo
-   multiselect), submit. Slower but uses the page's own tokens.
+## RESOLVED 2026-06-12: rendering the create-reservation form
+The fix was the HAR's two-step ordering: GET `CreateReservationCourtsView/6357?start=…
+&end=…&customSchedulerId=1218&courtLabel=…&returnUrlStartPage=…` (AJAX header + scheduler
+referer) immediately before the CreateReservation form GET. The courts-view **response
+body carries the right `requestData` token** (140 chars; the scheduler page also exposes
+a 280-char sibling with the same prefix — that one is NOT the form token). `primeCourtsView`
+in `portal.js` does this per court and its token takes precedence. Verified live: form
+rendered, full payload built, dry-run result ok on Court 1.
 
 ## The booking POST (once the form renders)
 `POST //Online/ReservationsApi/CreateReservation/6357?uiCulture=en-CA`, content-type
@@ -87,7 +79,17 @@ resolved live by name.
 - Each test cycle = push → user clicks Run workflow → read the `[tennis-agent] result: {…}`
   line + any DIAGNOSTIC blocks. (Cannot read the user's Actions logs directly — they paste.)
 
+## Timed (cron) path: prepare → sleep → fire
+`book.js` is split so the cron run is fast at the open: `prepareBooking` (launch, login,
+idempotency check, opponent, session tokens) runs while ARMING, before the sleep;
+`fireBooking` (courts-view + form + POST per court, cap handling) runs at 7:00:00.000.
+Manual runs use `runBooking` = prepare + fire immediately. The first booking attempt now
+lands ~1s after open instead of ~20s (login etc. no longer eats into the race).
+
 ## Next concrete step
-Run a dry run and read the `[tokens] …` line + `FORM-FETCH DIAGNOSTIC`. If requestData was
-found but the form is still empty → implement the `CreateReservationCourtsView`-then-
-`CreateReservation` two-step. If no good token → switch to UI-driven booking.
+Everything is verified except the cron path's timing in production. Let the 7 AM
+schedule run for real and check the Actions log: the arming line, the sleep duration,
+and the result. If losing the race to other bots, next optimization is pre-rendering the
+create form for the first-preference court during arming so the fire step is a single
+POST. If `cap-blocked`/CAP_HINTS misfires at the cap, capture the real error message
+from the log and tighten the regex.
