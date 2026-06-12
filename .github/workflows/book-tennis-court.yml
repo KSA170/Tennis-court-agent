@@ -36,21 +36,20 @@ jobs:
         with:
           node-version: '20'
 
-      # Find the code wherever the upload put it, and make sure an ESM
-      # package.json sits beside it. Prints the repo tree for diagnosis.
       - name: Locate app directory
         run: |
           echo "=== repo tree ==="
           find . -not -path '*/node_modules/*' -not -path '*/.git/*' -maxdepth 4 | sort
           echo "================="
-          ENTRY=$(find . -path '*/src/index.js' -not -path '*/node_modules/*' | head -1)
-          if [ -z "$ENTRY" ]; then echo "::error::src/index.js not found anywhere in the repo"; exit 1; fi
-          APPDIR=$(dirname "$(dirname "$ENTRY")")
+          ENTRY=$(find . -name index.js -not -path '*/node_modules/*' -not -path '*/.git/*' | head -1)
+          if [ -z "$ENTRY" ]; then echo "::error::index.js not found anywhere in the repo"; exit 1; fi
+          APPDIR=$(dirname "$ENTRY")
           echo "APPDIR=$APPDIR" >> "$GITHUB_ENV"
-          echo "Using APPDIR=$APPDIR"
+          echo "ENTRYFILE=$(basename "$ENTRY")" >> "$GITHUB_ENV"
+          echo "Using APPDIR=$APPDIR entry=$(basename "$ENTRY")"
           if [ ! -f "$APPDIR/package.json" ]; then
             echo '{"name":"tennis-court-agent","private":true,"type":"module"}' > "$APPDIR/package.json"
-            echo "No package.json beside src/ — wrote a minimal ESM one."
+            echo "No package.json beside the entry — wrote a minimal ESM one."
           fi
 
       - name: Install dependencies
@@ -77,7 +76,7 @@ jobs:
           RESEND_FROM: ${{ vars.RESEND_FROM }}
           CR_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           CR_DISCOVER: ${{ inputs.discover && '1' || '' }}
-        run: cd "$APPDIR" && node src/index.js
+        run: cd "$APPDIR" && node "$ENTRYFILE"
 
       - name: Upload debug artifacts on failure
         if: failure()
