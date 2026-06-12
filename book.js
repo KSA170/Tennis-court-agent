@@ -7,7 +7,7 @@ import {
   bookCourt, resolveOpponent, getMyBookings, cancelReservation,
   courtsToTry, dumpDiscovery,
 } from './portal.js';
-import { parseHour, clubHourAndDate } from './time.js';
+import { parseHour } from './time.js';
 import { membersConfigured } from './constants.js';
 
 /**
@@ -106,23 +106,17 @@ async function firstOpponent(ctx, names) {
 }
 
 function hasSlot(bookings, dateStr, hour) {
-  return bookings.some((b) => {
-    if (!b.start) return false;
-    const { date, hour: h } = clubHourAndDate(b.start);
-    return date === dateStr && h === hour;
-  });
+  return bookings.some((b) => b.localDate === dateStr && b.localHour === hour);
 }
 
 // "Cancel any 10 PM": pick the furthest-out one so we sacrifice the least-imminent game.
 function pickCancelTarget(bookings, hour) {
   const candidates = bookings
-    .filter((b) => b.start && clubHourAndDate(b.start).hour === hour)
-    .sort((a, b) => b.start - a.start);
+    .filter((b) => b.localHour === hour)
+    .sort((a, b) => (a.localDate < b.localDate ? 1 : a.localDate > b.localDate ? -1 : 0));
   return candidates[0] || null;
 }
 
 function describeBooking(b) {
-  if (!b.start) return `reservation ${b.id}`;
-  const { date } = clubHourAndDate(b.start);
-  return `${b.court || 'court'} on ${date} ${b.start.toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour: 'numeric', minute: '2-digit' })}`;
+  return b.display || `${b.court || 'court'} on ${b.localDate ?? '?'}` || `reservation ${b.id}`;
 }

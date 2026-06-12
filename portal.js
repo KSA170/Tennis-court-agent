@@ -175,21 +175,28 @@ export async function getMyBookings(page) {
   return parseBookings(data);
 }
 
-// NOTE: get-list response body wasn't captured in the HAR; this parser handles the
-// common Court Reserve / Kendo shapes and is verified on the first discovery run.
+// Confirmed shape from a live discovery run: { Data: [ { ReservationId, TypeName,
+// CourtsDisplay, ReservationStartDateTime: "2026-06-18T22:00:00" (Toronto wall-clock,
+// NO timezone suffix), IsCanceled, ... } ], IsValid }.
+// We read the date/hour straight off the string — never via new Date(), which would
+// misinterpret the un-zoned time as UTC on the runner.
 function parseBookings(data) {
   if (!data) return [];
   const rows = Array.isArray(data) ? data : (data.Data || data.data || data.Results || data.results || []);
   return rows.map((r) => {
-    const startRaw = r.Start || r.StartDate || r.StartTime || r.ReservationStart || r.start;
-    const dt = startRaw ? new Date(startRaw) : null;
+    const raw = r.ReservationStartDateTime || r.Start || r.StartDate || r.ReservationStart || '';
+    const m = typeof raw === 'string' && raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
     return {
-      id: String(r.Id ?? r.ReservationId ?? r.id ?? ''),
-      court: r.CourtLabel || r.Court || r.CourtName || r.ResourceName || '',
-      start: dt,
+      id: String(r.ReservationId ?? r.Id ?? r.id ?? ''),
+      court: r.CourtsDisplay || r.CourtLabel || r.Court || r.CourtName || '',
+      canceled: !!(r.IsCanceled ?? r.IsCancelled),
+      localDate: m ? `${m[1]}-${m[2]}-${m[3]}` : null, // YYYY-MM-DD, Toronto-local
+      localHour: m ? Number(m[4]) : null,              // 0–23, Toronto-local
+      display: r.DisplayDateAndTimes || raw || '',
+      type: r.TypeName || '',
       raw: r,
     };
-  }).filter((b) => b.id);
+  }).filter((b) => b.id && !b.canceled);
 }
 
 // ---------------------------------------------------------------------------
