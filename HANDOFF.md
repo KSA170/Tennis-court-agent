@@ -29,31 +29,14 @@ Google" button also exists but we use the password form).
 - **Cancel** — `cancelReservation` POSTs `/Online/MyProfile/CancelReservation/6357`
   (form scraped from the cancel fragment); returns `{"isValid":true}`.
 
-## The ONE remaining blocker: rendering the create-reservation form
-`GET /Online/ReservationsApi/CreateReservation?...` returns an **empty body** for us.
-From the HAR, the browser's working request:
-- was an **AJAX** call (`x-requested-with: XMLHttpRequest`), and
-- carried a **`requestData` session token** in the query string (a long base64-ish blob,
-  e.g. `BOYDb7t…`), and
-- was preceded by `GET /Online/Reservations/CreateReservationCourtsView/6357?start=…&end=…
-  &customSchedulerId=1218&courtLabel=Court 2&returnUrlStartPage=…?sId=1218`
-  (referer `…/Online/Reservations/Bookings/6357?sId=1218`).
-
-**Current attempt** (`getSessionTokens` in `src/portal.js`): load the Bookings scheduler
-page, regex `requestData` out of the Kendo data-source URLs / JS, and pass it on the
-create-form URL (with a referer header). `[tokens]` log line reports whether a token was
-found and its length.
-
-**If token replay keeps returning empty**, the likely culprits, in order:
-1. `requestData` must come from / be primed by `CreateReservationCourtsView` first
-   (call that GET, then the CreateReservation GET) — the HAR did both, back to back.
-2. There are multiple `requestData` blobs (member-expanded vs get-list vs create differ
-   after a shared prefix) — we may be picking the wrong one; print all candidates.
-3. The token is built in JS at click-time, not present statically — then **pivot to
-   driving the scheduler UI**: navigate `/Online/Reservations/Bookings/6357?sId=1218`,
-   move the Kendo scheduler to the target date, click the 9 PM cell for a court, fill the
-   modal (ReservationType "Singles", add opponent via the "members to play with" Kendo
-   multiselect), submit. Slower but uses the page's own tokens.
+## RESOLVED 2026-06-12: rendering the create-reservation form
+The fix was the HAR's two-step ordering: GET `CreateReservationCourtsView/6357?start=…
+&end=…&customSchedulerId=1218&courtLabel=…&returnUrlStartPage=…` (AJAX header + scheduler
+referer) immediately before the CreateReservation form GET. The courts-view **response
+body carries the right `requestData` token** (140 chars; the scheduler page also exposes
+a 280-char sibling with the same prefix — that one is NOT the form token). `primeCourtsView`
+in `portal.js` does this per court and its token takes precedence. Verified live: form
+rendered, full payload built, dry-run result ok on Court 1.
 
 ## The booking POST (once the form renders)
 `POST //Online/ReservationsApi/CreateReservation/6357?uiCulture=en-CA`, content-type
@@ -88,6 +71,10 @@ resolved live by name.
   line + any DIAGNOSTIC blocks. (Cannot read the user's Actions logs directly — they paste.)
 
 ## Next concrete step
-Run a dry run and read the `[tokens] …` line + `FORM-FETCH DIAGNOSTIC`. If requestData was
-found but the form is still empty → implement the `CreateReservationCourtsView`-then-
-`CreateReservation` two-step. If no good token → switch to UI-driven booking.
+Form rendering works; the only untested step is the real booking POST. Dry runs now print
+a `DRY-RUN PAYLOAD` block (field names; values for the booking-mechanics fields only —
+the Actions logs are public). Verify the payload looks right (server fields like
+RequestData/__RequestVerificationToken present with non-zero lengths, Date/StartTime/
+CourtId/ReservationTypeId correct), then do a live run (dry_run unchecked) and read the
+`[tennis-agent] result:` line. Note a live manual run books FOR REAL (and may trigger the
+cancel-a-10 PM path if at the 4-reservation cap).

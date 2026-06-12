@@ -181,6 +181,18 @@ export async function bookCourt(page, ctx, { courtLabel, courtId, dateStr, hour,
   params.append('X-Requested-With', 'XMLHttpRequest');
 
   if (dryRun) {
+    // Print what we'd POST. Values only for the booking-mechanics fields; everything
+    // else (tokens, member/personal data) is redacted to its length — Actions logs
+    // on this public repo are public.
+    const SHOW = new Set([
+      'Date', 'StartTime', 'Duration', 'ReservationTypeId', 'CourtId',
+      'SelectedCourtType', 'CourtTypeEnum', 'CustomSchedulerId',
+    ]);
+    console.log(`\n===== DRY-RUN PAYLOAD (${courtLabel}) =====`);
+    for (const [name, value] of params) {
+      console.log(SHOW.has(name) ? `${name} = ${value}` : `${name} (len ${value.length})`);
+    }
+    console.log('==========================================\n');
     return { ok: true, blockedByCap: false, court: courtLabel, opponent: opponent.fullName,
       reason: 'dry-run: payload built, POST skipped' };
   }
