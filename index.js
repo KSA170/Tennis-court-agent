@@ -12,10 +12,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
 
 async function main() {
   const cfg = loadConfig();
-  const targetDate = targetBookingDate();
+  if (cfg.targetDate && !/^\d{4}-\d{2}-\d{2}$/.test(cfg.targetDate)) {
+    throw new Error(`CR_TARGET_DATE must be YYYY-MM-DD, got: ${cfg.targetDate}`);
+  }
+  const targetDate = cfg.targetDate || targetBookingDate();
 
-  console.log(`[tennis-agent] club-today=${clubToday()} target=${targetDate} ` +
-    `hour=${cfg.targetHour} dryRun=${cfg.dryRun} discover=${cfg.discover}`);
+  console.log(`[tennis-agent] club-today=${clubToday()} target=${targetDate}` +
+    `${cfg.targetDate ? ' (override)' : ''} hour=${cfg.targetHour} dryRun=${cfg.dryRun} discover=${cfg.discover}`);
 
   // Testing / discovery: run immediately, skip the 7 AM arming.
   if (cfg.runNow) {

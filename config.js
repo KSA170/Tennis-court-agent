@@ -23,6 +23,8 @@ export function loadConfig() {
 
     // --- Booking preferences ---
     targetHour: envOr('CR_TARGET_HOUR', '9:00 PM'),
+    // One-off override (YYYY-MM-DD) for testing; default is today + 6 days.
+    targetDate: envOr('CR_TARGET_DATE', '') || null,
     durationMinutes: Number(envOr('CR_DURATION_MIN', 60)),
     reservationType: envOr('CR_RESERVATION_TYPE', 'Singles'),
     // Optional comma-separated court preference order, e.g. "Court 3,Court 1".
