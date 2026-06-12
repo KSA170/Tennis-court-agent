@@ -54,11 +54,13 @@ export async function login(browser, cfg) {
   }
 
   const user = page.locator(
-    'input[name="UserNameOrEmail"], input#UserNameOrEmail, input[name="Username"], ' +
-    'input[name="Email"], input[type="email"], input[autocomplete="username"]'
+    'input[name="email"], input[name="Email"], input[name="UserNameOrEmail"], ' +
+    'input#UserNameOrEmail, input[name="Username"], input[type="email"], ' +
+    'input[autocomplete="username"], input[placeholder*="Email" i]'
   ).first();
   const pass = page.locator(
-    'input[name="Password"], input#Password, input[type="password"], input[autocomplete="current-password"]'
+    'input[name="password"], input[name="Password"], input#Password, ' +
+    'input[type="password"], input[autocomplete="current-password"]'
   ).first();
 
   try {
@@ -75,8 +77,8 @@ export async function login(browser, cfg) {
   await Promise.all([
     page.waitForLoadState('networkidle').catch(() => {}),
     page.locator(
-      'button[type="submit"], input[type="submit"], button:has-text("Sign In"), ' +
-      'button:has-text("Log In"), button:has-text("Login")'
+      'button[type="submit"], input[type="submit"], button:has-text("Continue"), ' +
+      'button:has-text("Sign In"), button:has-text("Log In"), button:has-text("Login")'
     ).first().click(),
   ]);
 
