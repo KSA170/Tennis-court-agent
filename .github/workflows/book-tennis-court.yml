@@ -1,0 +1,82 @@
+name: Book tennis court
+
+# Court Reserve releases the new day at 7:00 AM America/Toronto. GitHub cron is
+# UTC and drifts several minutes under load, so we start EARLY and let the script
+# sleep to the exact second. Multiple staggered starts + a queue (concurrency)
+# mean that even if some runners boot late, an earlier one is already armed.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (do everything except final submit/cancel)'
+        type: boolean
+        default: true
+      discover:
+        description: 'Discovery: log in, dump live JSON shapes, and exit'
+        type: boolean
+        default: false
+  schedule:
+    # --- EDT (summer, UTC-4): 7:00 local = 11:00 UTC. Arm 10:35–10:53 UTC ---
+    - cron: '35 10 * * *'
+    - cron: '42 10 * * *'
+    - cron: '48 10 * * *'
+    - cron: '53 10 * * *'
+    # --- EST (winter, UTC-5): 7:00 local = 12:00 UTC. Arm 11:35–11:53 UTC ---
+    - cron: '35 11 * * *'
+    - cron: '42 11 * * *'
+    - cron: '48 11 * * *'
+    - cron: '53 11 * * *'
+
+# Only one run active at a time; standbys queue and take over if the holder dies.
+# Do NOT cancel in progress — the holder is the one doing the booking.
+concurrency:
+  group: book-tennis-court
+  cancel-in-progress: false
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: tennis-agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --no-save playwright@^1.48.0
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run booking agent
+        env:
+          CR_PORTAL_URL: ${{ secrets.CR_PORTAL_URL }}
+          CR_USERNAME: ${{ secrets.CR_USERNAME }}
+          CR_PASSWORD: ${{ secrets.CR_PASSWORD }}
+          CR_TARGET_HOUR: ${{ vars.CR_TARGET_HOUR }}
+          CR_DURATION_MIN: ${{ vars.CR_DURATION_MIN }}
+          CR_RESERVATION_TYPE: ${{ vars.CR_RESERVATION_TYPE }}
+          CR_COURT_PREFERENCE: ${{ vars.CR_COURT_PREFERENCE }}
+          CR_OPPONENTS: ${{ vars.CR_OPPONENTS }}
+          CR_MAX_RESERVATIONS: ${{ vars.CR_MAX_RESERVATIONS }}
+          CR_CANCEL_HOUR: ${{ vars.CR_CANCEL_HOUR }}
+          CR_NOTIFY_EMAIL: ${{ vars.CR_NOTIFY_EMAIL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ vars.RESEND_FROM }}
+          CR_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          CR_DISCOVER: ${{ inputs.discover && '1' || '' }}
+        run: node src/index.js
+
+      - name: Upload debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_id }}
+          path: tennis-agent/debug/
+          if-no-files-found: ignore
+          retention-days: 7
