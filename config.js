@@ -7,6 +7,13 @@ function req(name) {
   return v;
 }
 
+// Unset GitHub Actions *variables* arrive as empty strings, which slip past `??`.
+// Treat undefined OR empty as "use the default".
+function envOr(name, def) {
+  const v = process.env[name];
+  return v === undefined || v === '' ? def : v;
+}
+
 export function loadConfig() {
   return {
     // --- Court Reserve account ---
@@ -15,26 +22,26 @@ export function loadConfig() {
     password: req('CR_PASSWORD'),
 
     // --- Booking preferences ---
-    targetHour: process.env.CR_TARGET_HOUR ?? '9:00 PM',
-    durationMinutes: Number(process.env.CR_DURATION_MIN ?? 60),
-    reservationType: process.env.CR_RESERVATION_TYPE ?? 'Singles',
+    targetHour: envOr('CR_TARGET_HOUR', '9:00 PM'),
+    durationMinutes: Number(envOr('CR_DURATION_MIN', 60)),
+    reservationType: envOr('CR_RESERVATION_TYPE', 'Singles'),
     // Optional comma-separated court preference order, e.g. "Court 3,Court 1".
-    courtPreference: (process.env.CR_COURT_PREFERENCE ?? '')
+    courtPreference: envOr('CR_COURT_PREFERENCE', '')
       .split(',').map((s) => s.trim()).filter(Boolean),
 
     // --- Opponents (tried in order until one can be added) ---
-    opponents: (process.env.CR_OPPONENTS ?? 'Angad Dev Singh,Karam Adam')
+    opponents: envOr('CR_OPPONENTS', 'Angad Dev Singh,Karam Adam')
       .split(',').map((s) => s.trim()).filter(Boolean),
 
     // --- Max-reservation handling ---
-    maxReservations: Number(process.env.CR_MAX_RESERVATIONS ?? 4),
+    maxReservations: Number(envOr('CR_MAX_RESERVATIONS', 4)),
     // When at the cap, cancel any existing reservation at this hour to free a slot.
-    cancelHourToFreeSlot: process.env.CR_CANCEL_HOUR ?? '10:00 PM',
+    cancelHourToFreeSlot: envOr('CR_CANCEL_HOUR', '10:00 PM'),
 
     // --- Notifications (optional) ---
-    notifyEmail: process.env.CR_NOTIFY_EMAIL ?? null,
-    resendApiKey: process.env.RESEND_API_KEY ?? null,
-    resendFrom: process.env.RESEND_FROM ?? null,
+    notifyEmail: process.env.CR_NOTIFY_EMAIL || null,
+    resendApiKey: process.env.RESEND_API_KEY || null,
+    resendFrom: process.env.RESEND_FROM || null,
 
     // --- Runtime ---
     dryRun: process.env.CR_DRY_RUN === '1',   // do everything except final submit/cancel
