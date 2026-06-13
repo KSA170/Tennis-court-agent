@@ -11,7 +11,7 @@ import {
   ORG_ID, SELF, COST_TYPE_ID, CUSTOM_SCHEDULER_ID, COURT_TYPE_ENUM,
   RESERVATION_TYPE_ID, COURTS, KNOWN_OPPONENTS,
 } from './constants.js';
-import { clubInstant, clubDateToString, bookingDateField, startTimeField } from './time.js';
+import { clubInstant, clubDateToString, bookingDateField, startTimeField, clubToday } from './time.js';
 
 const BASE = 'https://app.courtreserve.com';
 
@@ -387,7 +387,42 @@ export async function dumpDiscovery(page, ctx, cfg) {
   await page.waitForTimeout(3000);
   page.off('response', onResp);
   if (!seen.length) log('SCHEDULER XHRs', '<none captured>');
-  for (const s of seen.slice(0, 8)) log(`SCHEDULER XHR — ${s.url.slice(0, 200)}`, s.body);
+  for (const s of seen.slice(0, 8)) console.log(`\nFULL XHR URL: ${s.url}`);
+
+  // Probe availability for specific FUTURE dates (the capture above only shows today).
+  // Take the real member-expanded request and force a date window via start/end, then
+  // summarize occupied courts so we can confirm date-filtering + the parse. Read-only.
+  const me = seen.find((s) => /member-expanded/i.test(s.url));
+  const addDays = (d, n) => {
+    const [y, m, dd] = d.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1, dd)); t.setUTCDate(t.getUTCDate() + n);
+    return t.toISOString().slice(0, 10);
+  };
+  if (me) {
+    for (const pd of [addDays(clubToday(), 3), addDays(clubToday(), 6)]) {
+      const variants = {
+        'start/end (local)': { start: `${pd}T00:00:00`, end: `${pd}T23:59:59` },
+        'start/end (utc)':   { start: `${pd}T00:00:00Z`, end: `${pd}T23:59:59Z` },
+      };
+      for (const [tag, extra] of Object.entries(variants)) {
+        const u = new URL(me.url);
+        for (const [k, v] of Object.entries(extra)) u.searchParams.set(k, v);
+        const r = await ctx.request.get(u.toString(),
+          { headers: { 'x-requested-with': 'XMLHttpRequest', accept: '*/*' } }).catch(() => null);
+        if (!r) { console.log(`\nPROBE ${pd} [${tag}]: request failed`); continue; }
+        const j = await r.json().catch(() => null);
+        const rows = (j && (j.Data || j.data)) || [];
+        const summary = rows.slice(0, 40).map((x) => ({
+          court: x.CourtLabel, id: x.CourtId, start: x.ReservationStart, end: x.ReservationEnd,
+          type: x.ReservationType, canceled: x.IsCanceled, closed: x.IsCourtClosed,
+        }));
+        console.log(`\n===== MEMBER-EXPANDED PROBE ${pd} [${tag}] (status ${r.status()}, ${rows.length} rows) =====`);
+        console.log(JSON.stringify(summary).slice(0, 2500));
+      }
+    }
+  } else {
+    console.log('\n[discovery] no member-expanded XHR captured — cannot probe availability.');
+  }
 
   // opponent search
   const name = cfg.opponents[0] || 'Angad';
