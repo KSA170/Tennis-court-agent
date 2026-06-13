@@ -17,7 +17,7 @@ import { membersConfigured } from './constants.js';
  * fireBooking. Caller owns `browser` and must close it.
  */
 export async function prepareBooking(cfg, targetDate) {
-  const base = { date: targetDate, hour: cfg.targetHour };
+  const base = { date: targetDate, hour: cfg.targetHours.join(' > ') };
   if (!cfg.discover && !membersConfigured()) {
     return { done: { ok: false, stage: 'not-configured', ...base,
       reason: 'CR_MEMBERS_JSON secret is missing or has no "self" member — set it (see README).' } };
@@ -34,13 +34,7 @@ export async function prepareBooking(cfg, targetDate) {
       return { browser, done: { ok: true, stage: 'discover', ...base, reason: 'dumped live JSON shapes' } };
     }
 
-    const targetHour = parseHour(cfg.targetHour);   // 21
-
-    // Idempotency — never double-book the same 9 PM slot.
     const bookings = await getMyBookings(page);
-    if (hasSlot(bookings, targetDate, targetHour)) {
-      return { browser, done: { ok: true, stage: 'already-booked', ...base, reason: 'reservation already exists' } };
-    }
 
     // Resolve an opponent (first one that exists in the club directory).
     const opponent = await firstOpponent(ctx, cfg.opponents);
@@ -52,48 +46,69 @@ export async function prepareBooking(cfg, targetDate) {
     // Per-session token the create-reservation form requires.
     const { requestData } = await getSessionTokens(page);
 
-    return { browser, ctx, page, base, targetHour, bookings, opponent, requestData };
+    return { browser, ctx, page, base, bookings, opponent, requestData };
   } catch (err) {
     return { browser, done: { ok: false, stage: 'error', ...base, error: String(err?.message ?? err) } };
   }
 }
 
 /**
- * Phase 2 — the time-critical part: per-court form fetch + POST, with the
- * max-reservation cap (cancel a 10 PM, retry once) handled.
+ * Phase 2 — the time-critical part. Books the BEST available preferred hour
+ * (e.g. 9 PM, else 8 PM, else 10 PM) in court-preference order, with the
+ * max-reservation cap (cancel a 10 PM, retry) handled.
  */
 export async function fireBooking(prep, cfg, targetDate) {
-  const { ctx, page, base, targetHour, opponent, requestData } = prep;
+  const { ctx, page, base, opponent, requestData } = prep;
   let { bookings } = prep;
   try {
+    const prefs = cfg.targetHours.map((label) => ({ label, hour: parseHour(label) }));
     const cancelHour = parseHour(cfg.cancelHourToFreeSlot); // 22
 
-    // First pass: try to grab a court.
-    let booked = await tryAllCourts(page, ctx, cfg, targetDate, targetHour, opponent, requestData);
+    // Idempotency. If we already hold the top preference for this date, we're done.
+    // If we hold only a lower preference, leave it — upgrading it to a better slot
+    // is the job of the separate upgrade sweep, not the initial booking.
+    const held = prefs.find((p) => hasSlot(bookings, targetDate, p.hour));
+    if (held) {
+      return { ok: true, stage: 'already-booked', ...base, hour: held.label,
+        reason: held === prefs[0]
+          ? `already hold top preference (${held.label})`
+          : `already hold ${held.label}; upgrade sweep handles improving it` };
+    }
+
     let cancelled;
+    const reasons = [];
+    for (const { label, hour } of prefs) {
+      let booked = await tryAllCourts(page, ctx, cfg, targetDate, hour, opponent, requestData);
 
-    // If the club's cap blocked us, cancel a 10 PM reservation and retry once.
-    if (booked.blockedByCap) {
-      if (!bookings.length) bookings = await getMyBookings(page);
-      const victim = pickCancelTarget(bookings, cancelHour);
-      if (!victim) {
-        return { ok: false, stage: 'cap-blocked', ...base,
-          reason: `at the ${cfg.maxReservations}-reservation cap and no ${cfg.cancelHourToFreeSlot} reservation to cancel` };
+      // Cap is global; free one 10 PM reservation (once) and retry this hour.
+      if (booked.blockedByCap && !cancelled) {
+        if (!bookings.length) bookings = await getMyBookings(page);
+        const victim = pickCancelTarget(bookings, cancelHour);
+        if (!victim) {
+          return { ok: false, stage: 'cap-blocked', ...base,
+            reason: `at the ${cfg.maxReservations}-reservation cap and no ${cfg.cancelHourToFreeSlot} reservation to cancel` };
+        }
+        const cancelRes = await cancelReservation(page, ctx, victim.id, { dryRun: cfg.dryRun });
+        if (!cancelRes.ok) {
+          return { ok: false, stage: 'cancel-failed', ...base,
+            reason: `could not cancel ${cfg.cancelHourToFreeSlot} reservation ${victim.id}: ${cancelRes.reason}` };
+        }
+        cancelled = describeBooking(victim);
+        booked = await tryAllCourts(page, ctx, cfg, targetDate, hour, opponent, requestData);
       }
-      const cancelRes = await cancelReservation(page, ctx, victim.id, { dryRun: cfg.dryRun });
-      if (!cancelRes.ok) {
-        return { ok: false, stage: 'cancel-failed', ...base,
-          reason: `could not cancel ${cfg.cancelHourToFreeSlot} reservation ${victim.id}: ${cancelRes.reason}` };
-      }
-      cancelled = describeBooking(victim);
-      booked = await tryAllCourts(page, ctx, cfg, targetDate, targetHour, opponent, requestData);
-    }
 
-    if (booked.ok) {
-      return { ok: true, stage: cfg.dryRun ? 'dry-run' : 'booked', ...base,
-        court: booked.court, opponent: booked.opponent ?? opponent.fullName, cancelled };
+      if (booked.ok) {
+        return { ok: true, stage: cfg.dryRun ? 'dry-run' : 'booked', ...base, hour: label,
+          court: booked.court, opponent: booked.opponent ?? opponent.fullName, cancelled };
+      }
+      if (booked.blockedByCap) {
+        return { ok: false, stage: 'cap-blocked', ...base, cancelled,
+          reason: `at the ${cfg.maxReservations}-reservation cap; could not free a slot` };
+      }
+      reasons.push(`${label}: ${booked.reason}`);
     }
-    return { ok: false, stage: 'book-failed', ...base, cancelled, reason: booked.reason };
+    return { ok: false, stage: 'book-failed', ...base, cancelled,
+      reason: `no preferred slot available — ${reasons.join('; ')}` };
   } catch (err) {
     return { ok: false, stage: 'error', ...base, error: String(err?.message ?? err) };
   }

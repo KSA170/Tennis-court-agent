@@ -8,7 +8,7 @@
 // drift only when a runner does boot before open.
 
 import { loadConfig } from './config.js';
-import { msUntilOpen, targetBookingDate, clubToday } from './time.js';
+import { msUntilOpen, targetBookingDate, clubToday, isWeekend } from './time.js';
 import { runBooking, prepareBooking, fireBooking } from './book.js';
 import { notify } from './notify.js';
 
@@ -29,7 +29,15 @@ async function main() {
   const targetDate = cfg.targetDate || targetBookingDate();
 
   console.log(`[tennis-agent] club-today=${clubToday()} target=${targetDate}` +
-    `${cfg.targetDate ? ' (override)' : ''} hour=${cfg.targetHour} dryRun=${cfg.dryRun} discover=${cfg.discover}`);
+    `${cfg.targetDate ? ' (override)' : ''} hours=[${cfg.targetHours.join(', ')}] ` +
+    `dryRun=${cfg.dryRun} discover=${cfg.discover}`);
+
+  // Weekdays only: the target (today + 6) lands on a weekend ~2 days a week — skip
+  // those cleanly. An explicit CR_TARGET_DATE override is always honored.
+  if (cfg.weekdaysOnly && !cfg.targetDate && !cfg.discover && isWeekend(targetDate)) {
+    console.log(`[tennis-agent] target ${targetDate} is a weekend — nothing to book (weekdays only).`);
+    return;
+  }
 
   // Testing / discovery: run immediately, skip the 7 AM arming.
   if (cfg.runNow) {

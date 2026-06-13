@@ -31,6 +31,18 @@ export function clubToday(date = new Date()) {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
+/** Day of week for a 'YYYY-MM-DD' date: 0=Sun … 6=Sat (calendar date, tz-independent). */
+export function weekdayOf(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+/** True if a 'YYYY-MM-DD' date falls on Saturday or Sunday. */
+export function isWeekend(dateStr) {
+  const w = weekdayOf(dateStr);
+  return w === 0 || w === 6;
+}
+
 /** The date that newly opens for booking at 7 AM today = today + BOOKING_LEAD_DAYS. */
 export function targetBookingDate(date = new Date()) {
   const { year, month, day } = partsInClubTz(date);
