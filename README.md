@@ -1,21 +1,23 @@
 # Tennis Court Agent — Don Mills Tennis Club
 
-Automatically reserves a **9 PM** court at Don Mills Tennis Club through the
+Automatically reserves an evening court at Don Mills Tennis Club through the
 Court Reserve member portal, the moment the booking window opens (7:00 AM
 America/Toronto, 6 days out), so you don't have to race for it manually.
 
 ## What it does
 
-1. **Arms early** on GitHub Actions and sleeps until exactly **7:00:00 Toronto time**
-   (this neutralizes GitHub cron's drift — see the workflow comments).
-2. Logs into the portal and checks you don't already hold that 9 PM slot (idempotent).
-3. Opens the newly-released day (**today + 6 days**) and finds **any open 9 PM court**
-   (honoring an optional court-preference order).
-4. Books it as a **Singles** game and adds your opponent — tries **Angad Dev Singh**,
+1. **Arms early** on GitHub Actions and sleeps until exactly **7:00:00 Toronto time**;
+   if GitHub dispatches the runner late, it still attempts the booking immediately.
+2. **Weekdays only** — skips targets that land on a Saturday or Sunday.
+3. Logs into the portal and checks you don't already hold a preferred slot (idempotent).
+4. Opens the newly-released day (**today + 6 days**) and books the **best available
+   preferred time** — **9 PM, else 8 PM, else 10 PM** — trying courts in order
+   **2, 3, 6, 4, 5, 1**.
+5. Books it as a **Singles** game and adds your opponent — tries **Angad Dev Singh**,
    then **Karam Adam**.
-5. **Max-4 handling:** if the club's 4-reservation cap blocks the booking, it cancels
-   **any existing 10 PM reservation** to free a slot, then books the 9 PM.
-6. Emails you the outcome (optional).
+6. **Max-4 handling:** if the club's 4-reservation cap blocks the booking, it cancels
+   **any existing 10 PM reservation** to free a slot, then books the better time.
+7. Emails you the outcome (optional).
 
 ## Status
 
@@ -73,10 +75,12 @@ In the GitHub repo: **Settings → Secrets and variables → Actions**.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `CR_TARGET_HOUR` | `9:00 PM` | Slot to book |
+| `CR_TARGET_HOURS` | `9:00 PM,8:00 PM,10:00 PM` | Preferred times, best first; books the best available |
+| `CR_TARGET_HOUR` | *(unset)* | One-off single-time override (e.g. manual test runs) |
+| `CR_WEEKDAYS_ONLY` | `1` | `1` = only book Mon–Fri targets; `0` = allow weekends |
 | `CR_DURATION_MIN` | `60` | Court duration |
 | `CR_RESERVATION_TYPE` | `Singles` | Exact label in the portal |
-| `CR_COURT_PREFERENCE` | *(none)* | e.g. `Court 3,Court 1` — tried in order, else any |
+| `CR_COURT_PREFERENCE` | `Court 2,Court 3,Court 6,Court 4,Court 5,Court 1` | Tried in order; bare numbers OK |
 | `CR_OPPONENTS` | `Angad Dev Singh,Karam Adam` | Tried in order |
 | `CR_MAX_RESERVATIONS` | `4` | Club cap |
 | `CR_CANCEL_HOUR` | `10:00 PM` | Hour to cancel when at the cap |

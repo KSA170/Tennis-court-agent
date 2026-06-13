@@ -6,11 +6,15 @@ manual booking + cancel; the HAR is **not** in this repo, so this doc is the sou
 truth for the portal's mechanics.
 
 ## Goal
-Auto-book any **9 PM** court at Don Mills (Court Reserve) the instant the booking window
-opens (7:00 AM America/Toronto, 6 days out). Single game vs **Angad Dev Singh** or
-**Karam Adam**. Max 4 reservations: if at the cap, cancel any **10 PM** reservation and
-book the 9 PM. First-come (not a lottery). Login is username+password (a "Continue with
+Auto-book the best available evening court at Don Mills (Court Reserve) the instant the
+booking window opens (7:00 AM America/Toronto, 6 days out). **Weekdays only (Mon–Fri).**
+Preferred times in order: **9 PM → 8 PM → 10 PM** (`CR_TARGET_HOURS`); court order
+**2,3,6,4,5,1** (`CR_COURT_PREFERENCE`). Single game vs **Angad Dev Singh** or **Karam
+Adam**. Max 4 reservations: if at the cap, cancel any **10 PM** reservation and book the
+better time. First-come (not a lottery). Login is username+password (a "Continue with
 Google" button also exists but we use the password form).
+TODO (#4, parked pending decision): a daytime "upgrade sweep" that checks existing
+10 PM / 8 PM bookings and moves them to a better slot (9 PM / 8 PM) if one frees up.
 
 ## STATUS: end-to-end VERIFIED (2026-06-12)
 A live run booked Court 1 on 2026-06-18 2 PM vs Angad (`{"stage":"booked"}`) via the
