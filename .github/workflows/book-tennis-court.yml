@@ -19,15 +19,24 @@ on:
         description: 'One-off hour override, e.g. "8:00 PM" (default: 9:00 PM)'
         type: string
         default: ''
+  # Booking opens 7:00 AM America/Toronto. Crons are UTC and DST-blind, so we cover
+  # BOTH seasons: open is 11:00 UTC (EDT, Mar–Nov) and 12:00 UTC (EST, Nov–Mar).
+  # index.js exits if a runner boots too early, arms+sleeps if it boots in the
+  # arming window, and STILL attempts the booking if it boots late (GitHub cron is
+  # routinely delayed 30+ min). So we stagger arming crons before each seasonal open
+  # plus a chain of late-attempt fallbacks after it; idempotency makes extra firings
+  # harmless (a later run sees "already-booked" and exits).
   schedule:
-    - cron: '35 10 * * *'
-    - cron: '42 10 * * *'
-    - cron: '48 10 * * *'
-    - cron: '53 10 * * *'
-    - cron: '35 11 * * *'
-    - cron: '42 11 * * *'
-    - cron: '48 11 * * *'
-    - cron: '53 11 * * *'
+    - cron: '35 10 * * *'   # 06:35 EDT / 05:35 EST
+    - cron: '50 10 * * *'   # 06:50 EDT / 05:50 EST  (EDT arming window)
+    - cron: '5 11 * * *'    # 07:05 EDT / 06:05 EST  (EDT late attempt)
+    - cron: '20 11 * * *'   # 07:20 EDT / 06:20 EST
+    - cron: '40 11 * * *'   # 07:40 EDT / 06:40 EST
+    - cron: '55 11 * * *'   # 07:55 EDT / 06:55 EST  (EST arming window)
+    - cron: '10 12 * * *'   # 08:10 EDT / 07:10 EST  (EST late attempt)
+    - cron: '30 12 * * *'   # 08:30 EDT / 07:30 EST
+    - cron: '15 13 * * *'   # 09:15 EDT / 08:15 EST  (late fallback)
+    - cron: '0 14 * * *'    # 10:00 EDT / 09:00 EST  (late fallback)
 
 concurrency:
   group: book-tennis-court
@@ -36,7 +45,9 @@ concurrency:
 jobs:
   book:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # Generous: a runner that boots in the arming window idles up to ~40 min before
+    # firing, plus install + booking time.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
 

@@ -79,17 +79,32 @@ resolved live by name.
 - Each test cycle = push → user clicks Run workflow → read the `[tennis-agent] result: {…}`
   line + any DIAGNOSTIC blocks. (Cannot read the user's Actions logs directly — they paste.)
 
-## Timed (cron) path: prepare → sleep → fire
-`book.js` is split so the cron run is fast at the open: `prepareBooking` (launch, login,
-idempotency check, opponent, session tokens) runs while ARMING, before the sleep;
-`fireBooking` (courts-view + form + POST per court, cap handling) runs at 7:00:00.000.
-Manual runs use `runBooking` = prepare + fire immediately. The first booking attempt now
-lands ~1s after open instead of ~20s (login etc. no longer eats into the race).
+## Timed (cron) path: idle-hold → arm → sleep → fire (DST-robust, late-tolerant)
+`book.js` is split: `prepareBooking` (launch, login, idempotency check, opponent, session
+tokens) and `fireBooking` (courts-view + form + POST per court, cap handling). `index.js`:
+1. `msUntilOpen > MAX_EARLY_MS` (40 min) → exit; a later cron picks it up nearer open.
+2. else idle-sleep (NOT logged in) until ~`ARM_LEAD_MS` (90 s) before open, so the
+   session/tokens are fresh; then `prepareBooking`.
+3. final precise sleep to 7:00:00.000, then `fireBooking`. NEVER fires before open.
+4. **If the runner boots AFTER open (cron delay), it still arms and attempts immediately**
+   — a late try is strictly better than none, and idempotency stops double-booking.
+Manual runs use `runBooking` = prepare + fire now.
+
+### KNOWN ISSUE — GitHub Actions cron is unreliable (root cause of the 2026-06-13 misses)
+GitHub dispatched NO runner until ~75–90 min after the scheduled crons that day, so the
+"arm before open, sleep to 7:00:00" never armed before open, and the old code's
+`withinBookingWindow` guard then refused to even try (now removed — see step 4). The
+workflow now staggers many crons across BOTH seasonal opens (11:00 UTC EDT / 12:00 UTC
+EST) with late-attempt fallbacks. This makes a (late) booking likely but CANNOT win the
+7:00:00 first-come race — GitHub cron simply isn't punctual enough. To actually win the
+race, trigger via an external scheduler (e.g. cron-job.org → `repository_dispatch`, or a
+tiny always-on VM) that fires ~3–5 min before open; the in-process sleep then nails the
+open. That's the recommended next step if 9 PM prime slots are contested.
 
 ## Next concrete step
-Everything is verified except the cron path's timing in production. Let the 7 AM
-schedule run for real and check the Actions log: the arming line, the sleep duration,
-and the result. If losing the race to other bots, next optimization is pre-rendering the
-create form for the first-preference court during arming so the fire step is a single
-POST. If `cap-blocked`/CAP_HINTS misfires at the cap, capture the real error message
-from the log and tighten the regex.
+Let the new staggered schedule run and read the Actions log: which cron actually booted a
+runner, the idle/arm/sleep lines, and the result. If 9 PM keeps getting lost to faster
+bookers, move the trigger off GitHub cron to an external `repository_dispatch` (above). If
+`cap-blocked`/CAP_HINTS misfires at the cap, capture the real error message and tighten the
+regex. Cloudflare login challenges are now retried 3× in `auth.js`; if one still slips
+through, the `login-no-field` diagnostic + debug artifact will show it.

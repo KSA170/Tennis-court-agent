@@ -33,6 +33,32 @@ async function diagnose(page, name) {
   } catch {}
 }
 
+const CF_TITLE = /just a moment|attention required|checking your browser|verifying you are human/i;
+
+/**
+ * Navigate to the login page, riding out Cloudflare's managed challenge. The
+ * interstitial ("Just a moment…") usually auto-clears in a few seconds, but it
+ * can fail to on a fresh runner IP — so we wait for the title to change and
+ * re-navigate a couple of times before giving up.
+ */
+async function gotoLoginPastCloudflare(page, url) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.waitForLoadState('networkidle').catch(() => {});
+    if (!CF_TITLE.test(await page.title().catch(() => ''))) return;
+
+    console.log(`[auth] Cloudflare challenge detected (attempt ${attempt}/3) — waiting for it to clear…`);
+    // Resolves as soon as the challenge clears; otherwise falls through to retry.
+    await page.waitForFunction(
+      (re) => !new RegExp(re, 'i').test(document.title),
+      CF_TITLE.source, { timeout: 25000 }
+    ).catch(() => {});
+    if (!CF_TITLE.test(await page.title().catch(() => ''))) return;
+    await page.waitForTimeout(3000);
+  }
+  // Fall through: the field-wait below will diagnose + throw if the form never appears.
+}
+
 export async function login(browser, cfg) {
   const ctx = await browser.newContext({
     userAgent:
@@ -43,15 +69,7 @@ export async function login(browser, cfg) {
   });
   const page = await ctx.newPage();
 
-  await page.goto(LOGIN_URL(cfg.portalUrl), { waitUntil: 'domcontentloaded' });
-  await page.waitForLoadState('networkidle').catch(() => {});
-
-  // A Cloudflare interstitial would hide the form; give it a moment to clear.
-  if (/just a moment|attention required|checking your browser/i.test(await page.title().catch(() => ''))) {
-    console.log('[auth] Cloudflare challenge detected — waiting for it to clear…');
-    await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
-    await page.waitForTimeout(4000);
-  }
+  await gotoLoginPastCloudflare(page, LOGIN_URL(cfg.portalUrl));
 
   const user = page.locator(
     'input[name="email"], input[name="Email"], input[name="UserNameOrEmail"], ' +
