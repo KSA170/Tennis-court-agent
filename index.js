@@ -9,7 +9,7 @@
 
 import { loadConfig } from './config.js';
 import { msUntilOpen, targetBookingDate, clubToday, isWeekend } from './time.js';
-import { runBooking, prepareBooking, fireBooking } from './book.js';
+import { runBooking, prepareBooking, fireBooking, runUpgradeSweep } from './book.js';
 import { notify } from './notify.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
@@ -30,7 +30,17 @@ async function main() {
 
   console.log(`[tennis-agent] club-today=${clubToday()} target=${targetDate}` +
     `${cfg.targetDate ? ' (override)' : ''} hours=[${cfg.targetHours.join(', ')}] ` +
-    `dryRun=${cfg.dryRun} discover=${cfg.discover}`);
+    `mode=${cfg.mode} dryRun=${cfg.dryRun} discover=${cfg.discover}`);
+
+  // Upgrade sweep: independent of the 7 AM open — runs immediately whenever
+  // triggered, scans existing bookings, and moves any to a better slot if free.
+  if (cfg.mode === 'upgrade') {
+    const r = await runUpgradeSweep(cfg);
+    console.log('[tennis-agent] upgrade result:', JSON.stringify(r));
+    await notify(cfg, r);
+    if (!r.ok) process.exitCode = 1;
+    return;
+  }
 
   // Weekdays only: the target (today + 6) lands on a weekend ~2 days a week — skip
   // those cleanly. An explicit CR_TARGET_DATE override is always honored.

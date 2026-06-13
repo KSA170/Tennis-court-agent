@@ -7,7 +7,7 @@ import {
   bookCourt, resolveOpponent, getMyBookings, cancelReservation,
   courtsToTry, dumpDiscovery, getSessionTokens,
 } from './portal.js';
-import { parseHour } from './time.js';
+import { parseHour, clubToday, isWeekend } from './time.js';
 import { membersConfigured } from './constants.js';
 
 /**
@@ -127,6 +127,93 @@ export async function runBooking(cfg, targetDate) {
   } finally {
     await prep.browser?.close();
   }
+}
+
+/**
+ * Daytime "upgrade sweep": for each of my existing weekday bookings sitting at a
+ * lower-preference hour (e.g. 10 PM or 8 PM), try to move it up to a better slot
+ * (9 PM, else 8 PM) if one is now free — booking the better slot FIRST, then
+ * cancelling the old one, so a reservation is never lost.
+ *
+ * At the reservation cap this can't be done safely yet (no room to hold a 5th
+ * while we swap, and the cap-error response is still unverified), so those are
+ * skipped with a note rather than risked.
+ */
+export async function runUpgradeSweep(cfg) {
+  const base = { stage: 'upgrade', date: '', hour: cfg.targetHours.join(' > ') };
+  if (!membersConfigured()) {
+    return { ok: false, ...base, reason: 'CR_MEMBERS_JSON secret is missing or has no "self" member.' };
+  }
+
+  const browser = await chromium.launch({ headless: cfg.headless });
+  try {
+    const { ctx, page } = await login(browser, cfg);
+    let bookings = await getMyBookings(page);
+    const opponent = await firstOpponent(ctx, cfg.opponents);
+    if (!opponent) {
+      return { ok: false, ...base, reason: `no opponent found among [${cfg.opponents.join(', ')}]` };
+    }
+    const { requestData } = await getSessionTokens(page);
+
+    const prefs = cfg.targetHours.map((label) => ({ label, hour: parseHour(label) }));
+    const rankOf = (hour) => prefs.findIndex((p) => p.hour === hour);
+    const today = clubToday();
+
+    // Upgradeable = future weekday bookings whose hour is a preferred hour but not
+    // already the top preference (so a strictly-better slot exists to chase).
+    const candidates = bookings.filter((b) =>
+      b.localDate && b.localHour != null &&
+      b.localDate >= today && !isWeekend(b.localDate) &&
+      rankOf(b.localHour) > 0);
+
+    const upgraded = [];
+    const skipped = [];
+    for (const b of candidates) {
+      const rank = rankOf(b.localHour);
+      const fromLabel = prefs[rank].label;
+      // Better hours we don't already hold on that date.
+      const targets = prefs.slice(0, rank).filter((p) => !hasSlot(bookings, b.localDate, p.hour));
+      if (!targets.length) continue;
+
+      if (bookings.length >= cfg.maxReservations) {
+        skipped.push(`${b.localDate} ${fromLabel} — at the ${cfg.maxReservations}-reservation cap (at-cap upgrades not yet enabled)`);
+        continue;
+      }
+
+      // Book the better slot first; only if that succeeds do we release the old one.
+      const got = await tryBookBest(page, ctx, cfg, b.localDate, targets, opponent, requestData);
+      if (!got.ok) {
+        skipped.push(`${b.localDate} ${fromLabel} — no better slot free`);
+        continue;
+      }
+      const cancelRes = await cancelReservation(page, ctx, b.id, { dryRun: cfg.dryRun });
+      let note = `${b.localDate}: ${fromLabel} → ${got.hour} (${got.court})`;
+      if (!cancelRes.ok && !cfg.dryRun) note += ' [WARNING: old slot NOT cancelled — you now hold both]';
+      upgraded.push(note);
+      bookings = await getMyBookings(page); // reflect the swap for the next candidate
+    }
+
+    const reason = upgraded.length
+      ? `upgraded ${upgraded.length}: ${upgraded.join('; ')}`
+      : (skipped.length ? `no upgrades made — ${skipped.join('; ')}` : 'no upgradeable bookings found');
+    return { ok: true, ...base, upgraded, skipped, reason };
+  } catch (err) {
+    return { ok: false, ...base, error: String(err?.message ?? err) };
+  } finally {
+    await browser.close();
+  }
+}
+
+/** Book the best available hour among `targets` (best first), in court-preference order. */
+async function tryBookBest(page, ctx, cfg, dateStr, targets, opponent, requestData) {
+  const reasons = [];
+  for (const t of targets) {
+    const r = await tryAllCourts(page, ctx, cfg, dateStr, t.hour, opponent, requestData);
+    if (r.ok) return { ok: true, hour: t.label, court: r.court };
+    if (r.blockedByCap) return { ok: false, blockedByCap: true, reason: 'at cap' };
+    reasons.push(`${t.label}: ${r.reason}`);
+  }
+  return { ok: false, blockedByCap: false, reason: reasons.join('; ') };
 }
 
 /** Attempt each court in preference order; first success wins, cap aborts early. */

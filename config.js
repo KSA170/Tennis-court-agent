@@ -60,6 +60,9 @@ export function loadConfig() {
     resendFrom: process.env.RESEND_FROM || null,
 
     // --- Runtime ---
+    // 'book' (default) = grab the best slot at the open; 'upgrade' = daytime sweep
+    // that moves an existing lower-preference booking up if a better slot freed up.
+    mode: (envOr('CR_MODE', 'book')).toLowerCase(),
     dryRun: process.env.CR_DRY_RUN === '1',   // do everything except final submit/cancel
     headless: process.env.CR_HEADLESS !== '0',
     discover: process.env.CR_DISCOVER === '1', // dump live JSON shapes and exit
