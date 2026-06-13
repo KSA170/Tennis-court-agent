@@ -350,6 +350,73 @@ export async function cancelReservation(page, ctx, reservationId, { reason = 'We
 }
 
 // ---------------------------------------------------------------------------
+// Court availability (read-only) — used by the upgrade sweep to confirm a better
+// slot is genuinely free BEFORE touching any reservation.
+// ---------------------------------------------------------------------------
+
+/**
+ * Navigate the scheduler and capture its live member-expanded request (URL with the
+ * session RequestData, auth headers, and the jsonData template). Returns a reusable
+ * probe for `getCourtAvailability`, or null if the request wasn't seen.
+ */
+export async function captureAvailabilityProbe(page) {
+  let captured = null;
+  const onReq = (req) => {
+    try { if (!captured && /member-expanded/i.test(req.url())) captured = { url: req.url(), headers: req.headers() }; }
+    catch { /* ignore */ }
+  };
+  page.on('request', onReq);
+  await page.goto(`${BASE}/Online/Reservations/Bookings/${ORG_ID}?sId=${CUSTOM_SCHEDULER_ID}`,
+    { waitUntil: 'networkidle' }).catch(() => {});
+  await page.waitForTimeout(2500);
+  page.off('request', onReq);
+  if (!captured) return null;
+
+  let jsonData = {};
+  try { jsonData = JSON.parse(decodeURIComponent(new URL(captured.url).searchParams.get('jsonData') || '{}')); }
+  catch { /* leave empty */ }
+  const pick = ['authorization', 'referer', 'accept', 'accept-language', 'user-agent'];
+  const headers = { 'x-requested-with': 'XMLHttpRequest', accept: '*/*' };
+  for (const k of Object.keys(captured.headers)) if (pick.includes(k.toLowerCase())) headers[k] = captured.headers[k];
+  return { url: captured.url, headers, jsonData };
+}
+
+/**
+ * Read court occupancy for `dateStr` (YYYY-MM-DD) by replaying the captured probe with
+ * the date swapped into jsonData. Returns `{ ok, isBusy(courtLabel, hour) }`. On any
+ * failure returns `{ ok:false }` and isBusy() conservatively reports busy (so callers
+ * never act on uncertain availability).
+ */
+export async function getCourtAvailability(ctx, probe, dateStr) {
+  if (!probe) return { ok: false, isBusy: () => true };
+  const [Y, M, D] = dateStr.split('-').map(Number);
+  const jd = { ...probe.jsonData, KendoDate: { Year: Y, Month: M, Day: D },
+    startDate: `${dateStr}T12:00:00.000Z`, Date: `${dateStr} 12:00:00 GMT` };
+  const u = new URL(probe.url);
+  u.searchParams.set('jsonData', JSON.stringify(jd));
+
+  const res = await ctx.request.get(u.toString(), { headers: probe.headers }).catch(() => null);
+  if (!res || !res.ok()) return { ok: false, status: res ? res.status() : 0, isBusy: () => true };
+  const data = await res.json().catch(() => null);
+  const rows = ((data && (data.Data || data.data)) || [])
+    .filter((x) => !x.IsCanceled && !x.IsBookingWindow && !x.IsBlockingWindow);
+
+  const hourOf = (s) => { const m = String(s).match(/T(\d{2}):/); return m ? Number(m[1]) : null; };
+  const busy = [];
+  for (const r of rows) {
+    const from = hourOf(r.ReservationStart);
+    if (from == null) continue;
+    let to = hourOf(r.ReservationEnd);
+    if (to == null || to <= from) to = from + 1;        // 1h slot, or wrap past midnight
+    busy.push({ court: r.CourtLabel, from, to });
+  }
+  return {
+    ok: true,
+    isBusy: (court, hour) => busy.some((b) => b.court === court && b.from <= hour && hour < b.to),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Discovery — dump the live JSON shapes the HAR didn't capture, so the parsers
 // above (parseBookings, resolveOpponent, availability) can be confirmed.
 // ---------------------------------------------------------------------------

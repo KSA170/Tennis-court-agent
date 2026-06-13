@@ -6,9 +6,10 @@ import { login } from './auth.js';
 import {
   bookCourt, resolveOpponent, getMyBookings, cancelReservation,
   courtsToTry, dumpDiscovery, getSessionTokens,
+  captureAvailabilityProbe, getCourtAvailability,
 } from './portal.js';
 import { parseHour, clubToday, isWeekend } from './time.js';
-import { membersConfigured } from './constants.js';
+import { membersConfigured, COURTS } from './constants.js';
 
 /**
  * Phase 1 — everything that can be done BEFORE the window opens: launch, log in,
@@ -131,13 +132,13 @@ export async function runBooking(cfg, targetDate) {
 
 /**
  * Daytime "upgrade sweep": for each of my existing weekday bookings sitting at a
- * lower-preference hour (e.g. 10 PM or 8 PM), try to move it up to a better slot
- * (9 PM, else 8 PM) if one is now free — booking the better slot FIRST, then
- * cancelling the old one, so a reservation is never lost.
- *
- * At the reservation cap this can't be done safely yet (no room to hold a 5th
- * while we swap, and the cap-error response is still unverified), so those are
- * skipped with a note rather than risked.
+ * lower-preference hour (e.g. 10 PM or 8 PM), move it up to a better slot (9 PM,
+ * else 8 PM) when one is free. Availability is read FIRST (read-only), and a
+ * reservation is never lost:
+ *  - Under the cap: book the better slot, then cancel the old one.
+ *  - At the cap (no room to hold a 5th): only after availability confirms the
+ *    better slot is free, cancel the old one and rebook the better one, rolling
+ *    back to the original slot if the rebook fails.
  */
 export async function runUpgradeSweep(cfg) {
   const base = { stage: 'upgrade', date: '', hour: cfg.targetHours.join(' > ') };
@@ -154,10 +155,12 @@ export async function runUpgradeSweep(cfg) {
       return { ok: false, ...base, reason: `no opponent found among [${cfg.opponents.join(', ')}]` };
     }
     const { requestData } = await getSessionTokens(page);
+    const probe = await captureAvailabilityProbe(page); // for read-only availability checks
 
     const prefs = cfg.targetHours.map((label) => ({ label, hour: parseHour(label) }));
     const rankOf = (hour) => prefs.findIndex((p) => p.hour === hour);
     const today = clubToday();
+    const courtByLabel = new Map(COURTS.map((c) => [c.label, c]));
 
     // Upgradeable = future weekday bookings whose hour is a preferred hour but not
     // already the top preference (so a strictly-better slot exists to chase).
@@ -172,24 +175,47 @@ export async function runUpgradeSweep(cfg) {
       const rank = rankOf(b.localHour);
       const fromLabel = prefs[rank].label;
       // Better hours we don't already hold on that date.
-      const targets = prefs.slice(0, rank).filter((p) => !hasSlot(bookings, b.localDate, p.hour));
-      if (!targets.length) continue;
+      const betterHours = prefs.slice(0, rank).filter((p) => !hasSlot(bookings, b.localDate, p.hour));
+      if (!betterHours.length) continue;
 
-      if (bookings.length >= cfg.maxReservations) {
-        skipped.push(`${b.localDate} ${fromLabel} — at the ${cfg.maxReservations}-reservation cap (at-cap upgrades not yet enabled)`);
+      // Read availability for the date and pick the best free (hour, court).
+      const avail = await getCourtAvailability(ctx, probe, b.localDate);
+      if (!avail.ok) {
+        skipped.push(`${b.localDate} ${fromLabel} — could not read availability${avail.status ? ` (status ${avail.status})` : ''}`);
         continue;
       }
-
-      // Book the better slot first; only if that succeeds do we release the old one.
-      const got = await tryBookBest(page, ctx, cfg, b.localDate, targets, opponent, requestData);
-      if (!got.ok) {
-        skipped.push(`${b.localDate} ${fromLabel} — no better slot free`);
-        continue;
+      let target = null;
+      for (const bh of betterHours) {
+        const court = courtsToTry(cfg.courtPreference).find((c) => !avail.isBusy(c.label, bh.hour));
+        if (court) { target = { hour: bh.hour, label: bh.label, court }; break; }
       }
-      const cancelRes = await cancelReservation(page, ctx, b.id, { dryRun: cfg.dryRun });
-      let note = `${b.localDate}: ${fromLabel} → ${got.hour} (${got.court})`;
-      if (!cancelRes.ok && !cfg.dryRun) note += ' [WARNING: old slot NOT cancelled — you now hold both]';
-      upgraded.push(note);
+      if (!target) { skipped.push(`${b.localDate} ${fromLabel} — no better slot free`); continue; }
+
+      const book = (courtLabel, courtId, hour) => bookCourt(page, ctx, {
+        courtLabel, courtId, dateStr: b.localDate, hour, opponent, dryRun: cfg.dryRun, requestData });
+      const toNote = `${b.localDate}: ${fromLabel} → ${target.label} (${target.court.label})`;
+
+      if (bookings.length < cfg.maxReservations) {
+        // Under cap: book the better slot first; only then release the old one.
+        const booked = await book(target.court.label, target.court.id, target.hour);
+        if (!booked.ok) { skipped.push(`${toNote} — booking failed (${booked.reason || '?'})`); continue; }
+        const cancelRes = await cancelReservation(page, ctx, b.id, { dryRun: cfg.dryRun });
+        upgraded.push(toNote + (!cancelRes.ok && !cfg.dryRun ? ' [WARNING: old slot NOT cancelled — you now hold both]' : ''));
+      } else {
+        // At cap: availability already confirms the target is free, so free the old
+        // slot, then book the better one; roll back to the original if the rebook fails.
+        const cancelRes = await cancelReservation(page, ctx, b.id, { dryRun: cfg.dryRun });
+        if (!cancelRes.ok) { skipped.push(`${toNote} — could not cancel old slot to make room (${cancelRes.reason || '?'})`); continue; }
+        const booked = await book(target.court.label, target.court.id, target.hour);
+        if (booked.ok) {
+          upgraded.push(toNote);
+        } else {
+          const orig = courtByLabel.get(b.court);
+          const rb = await book(b.court, orig ? orig.id : '', b.localHour);
+          skipped.push(`${toNote} — rebook failed (${booked.reason || '?'}); rollback ` +
+            (rb.ok || cfg.dryRun ? `OK (kept ${fromLabel})` : 'FAILED — RESERVATION LOST, book manually!'));
+        }
+      }
       bookings = await getMyBookings(page); // reflect the swap for the next candidate
     }
 
@@ -202,18 +228,6 @@ export async function runUpgradeSweep(cfg) {
   } finally {
     await browser.close();
   }
-}
-
-/** Book the best available hour among `targets` (best first), in court-preference order. */
-async function tryBookBest(page, ctx, cfg, dateStr, targets, opponent, requestData) {
-  const reasons = [];
-  for (const t of targets) {
-    const r = await tryAllCourts(page, ctx, cfg, dateStr, t.hour, opponent, requestData);
-    if (r.ok) return { ok: true, hour: t.label, court: r.court };
-    if (r.blockedByCap) return { ok: false, blockedByCap: true, reason: 'at cap' };
-    reasons.push(`${t.label}: ${r.reason}`);
-  }
-  return { ok: false, blockedByCap: false, reason: reasons.join('; ') };
 }
 
 /** Attempt each court in preference order; first success wins, cap aborts early. */
