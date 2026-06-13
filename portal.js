@@ -378,7 +378,7 @@ export async function dumpDiscovery(page, ctx, cfg) {
       const url = r.url();
       if (!/scheduler|reservation|availab|expand|getreservations/i.test(url)) return;
       if (!/json/i.test(r.headers()['content-type'] || '')) return;
-      seen.push({ url, body: await r.json().catch(() => '<non-json>') });
+      seen.push({ url, reqHeaders: r.request().headers(), body: await r.json().catch(() => '<non-json>') });
     } catch { /* ignore */ }
   };
   page.on('response', onResp);
@@ -389,9 +389,10 @@ export async function dumpDiscovery(page, ctx, cfg) {
   if (!seen.length) log('SCHEDULER XHRs', '<none captured>');
   for (const s of seen.slice(0, 8)) console.log(`\nFULL XHR URL: ${s.url}`);
 
-  // Probe availability for specific FUTURE dates (the capture above only shows today).
-  // Take the real member-expanded request and force a date window via start/end, then
-  // summarize occupied courts so we can confirm date-filtering + the parse. Read-only.
+  // Probe availability for FUTURE dates by replaying the real member-expanded request
+  // with (a) its captured auth headers and (b) the date swapped inside jsonData
+  // (KendoDate/Date/startDate). Read-only. Jun 16 has a known Court 2 22:00 booking,
+  // so it doubles as a ground-truth check of the parse.
   const me = seen.find((s) => /member-expanded/i.test(s.url));
   const addDays = (d, n) => {
     const [y, m, dd] = d.split('-').map(Number);
@@ -399,26 +400,28 @@ export async function dumpDiscovery(page, ctx, cfg) {
     return t.toISOString().slice(0, 10);
   };
   if (me) {
+    console.log('\nMEMBER-EXPANDED REQUEST HEADERS:', JSON.stringify(me.reqHeaders || {}));
+    const pick = ['authorization', 'x-requested-with', 'referer', 'accept', 'requestverificationtoken', 'x-csrf-token'];
+    const authHeaders = {};
+    for (const k of Object.keys(me.reqHeaders || {})) {
+      if (pick.includes(k.toLowerCase())) authHeaders[k] = me.reqHeaders[k];
+    }
+    let jdT = {};
+    try { jdT = JSON.parse(decodeURIComponent(new URL(me.url).searchParams.get('jsonData') || '{}')); } catch { /* */ }
     for (const pd of [addDays(clubToday(), 3), addDays(clubToday(), 6)]) {
-      const variants = {
-        'start/end (local)': { start: `${pd}T00:00:00`, end: `${pd}T23:59:59` },
-        'start/end (utc)':   { start: `${pd}T00:00:00Z`, end: `${pd}T23:59:59Z` },
-      };
-      for (const [tag, extra] of Object.entries(variants)) {
-        const u = new URL(me.url);
-        for (const [k, v] of Object.entries(extra)) u.searchParams.set(k, v);
-        const r = await ctx.request.get(u.toString(),
-          { headers: { 'x-requested-with': 'XMLHttpRequest', accept: '*/*' } }).catch(() => null);
-        if (!r) { console.log(`\nPROBE ${pd} [${tag}]: request failed`); continue; }
-        const j = await r.json().catch(() => null);
-        const rows = (j && (j.Data || j.data)) || [];
-        const summary = rows.slice(0, 40).map((x) => ({
-          court: x.CourtLabel, id: x.CourtId, start: x.ReservationStart, end: x.ReservationEnd,
-          type: x.ReservationType, canceled: x.IsCanceled, closed: x.IsCourtClosed,
-        }));
-        console.log(`\n===== MEMBER-EXPANDED PROBE ${pd} [${tag}] (status ${r.status()}, ${rows.length} rows) =====`);
-        console.log(JSON.stringify(summary).slice(0, 2500));
-      }
+      const [Y, M, D] = pd.split('-').map(Number);
+      const jd = { ...jdT, KendoDate: { Year: Y, Month: M, Day: D },
+        startDate: `${pd}T12:00:00.000Z`, Date: `${pd} 12:00:00 GMT` };
+      const u = new URL(me.url);
+      u.searchParams.set('jsonData', JSON.stringify(jd));
+      const r = await ctx.request.get(u.toString(),
+        { headers: { 'x-requested-with': 'XMLHttpRequest', accept: '*/*', ...authHeaders } }).catch(() => null);
+      const j = r ? await r.json().catch(() => null) : null;
+      const rows = (j && (j.Data || j.data)) || [];
+      const occ = rows.filter((x) => !x.IsCanceled).map((x) => ({
+        court: x.CourtLabel, start: x.ReservationStart, end: x.ReservationEnd, closed: x.IsCourtClosed }));
+      console.log(`\n===== ME REPLAY ${pd} (status ${r ? r.status() : 'ERR'}, ${rows.length} rows) =====`);
+      console.log(JSON.stringify(occ).slice(0, 1800));
     }
   } else {
     console.log('\n[discovery] no member-expanded XHR captured — cannot probe availability.');
