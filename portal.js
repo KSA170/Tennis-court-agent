@@ -11,7 +11,7 @@ import {
   ORG_ID, SELF, COST_TYPE_ID, CUSTOM_SCHEDULER_ID, COURT_TYPE_ENUM,
   RESERVATION_TYPE_ID, COURTS, KNOWN_OPPONENTS,
 } from './constants.js';
-import { clubInstant, clubDateToString, bookingDateField, startTimeField } from './time.js';
+import { clubInstant, clubDateToString, bookingDateField, startTimeField, clubToday } from './time.js';
 
 const BASE = 'https://app.courtreserve.com';
 
@@ -350,6 +350,73 @@ export async function cancelReservation(page, ctx, reservationId, { reason = 'We
 }
 
 // ---------------------------------------------------------------------------
+// Court availability (read-only) — used by the upgrade sweep to confirm a better
+// slot is genuinely free BEFORE touching any reservation.
+// ---------------------------------------------------------------------------
+
+/**
+ * Navigate the scheduler and capture its live member-expanded request (URL with the
+ * session RequestData, auth headers, and the jsonData template). Returns a reusable
+ * probe for `getCourtAvailability`, or null if the request wasn't seen.
+ */
+export async function captureAvailabilityProbe(page) {
+  let captured = null;
+  const onReq = (req) => {
+    try { if (!captured && /member-expanded/i.test(req.url())) captured = { url: req.url(), headers: req.headers() }; }
+    catch { /* ignore */ }
+  };
+  page.on('request', onReq);
+  await page.goto(`${BASE}/Online/Reservations/Bookings/${ORG_ID}?sId=${CUSTOM_SCHEDULER_ID}`,
+    { waitUntil: 'networkidle' }).catch(() => {});
+  await page.waitForTimeout(2500);
+  page.off('request', onReq);
+  if (!captured) return null;
+
+  let jsonData = {};
+  try { jsonData = JSON.parse(decodeURIComponent(new URL(captured.url).searchParams.get('jsonData') || '{}')); }
+  catch { /* leave empty */ }
+  const pick = ['authorization', 'referer', 'accept', 'accept-language', 'user-agent'];
+  const headers = { 'x-requested-with': 'XMLHttpRequest', accept: '*/*' };
+  for (const k of Object.keys(captured.headers)) if (pick.includes(k.toLowerCase())) headers[k] = captured.headers[k];
+  return { url: captured.url, headers, jsonData };
+}
+
+/**
+ * Read court occupancy for `dateStr` (YYYY-MM-DD) by replaying the captured probe with
+ * the date swapped into jsonData. Returns `{ ok, isBusy(courtLabel, hour) }`. On any
+ * failure returns `{ ok:false }` and isBusy() conservatively reports busy (so callers
+ * never act on uncertain availability).
+ */
+export async function getCourtAvailability(ctx, probe, dateStr) {
+  if (!probe) return { ok: false, isBusy: () => true };
+  const [Y, M, D] = dateStr.split('-').map(Number);
+  const jd = { ...probe.jsonData, KendoDate: { Year: Y, Month: M, Day: D },
+    startDate: `${dateStr}T12:00:00.000Z`, Date: `${dateStr} 12:00:00 GMT` };
+  const u = new URL(probe.url);
+  u.searchParams.set('jsonData', JSON.stringify(jd));
+
+  const res = await ctx.request.get(u.toString(), { headers: probe.headers }).catch(() => null);
+  if (!res || !res.ok()) return { ok: false, status: res ? res.status() : 0, isBusy: () => true };
+  const data = await res.json().catch(() => null);
+  const rows = ((data && (data.Data || data.data)) || [])
+    .filter((x) => !x.IsCanceled && !x.IsBookingWindow && !x.IsBlockingWindow);
+
+  const hourOf = (s) => { const m = String(s).match(/T(\d{2}):/); return m ? Number(m[1]) : null; };
+  const busy = [];
+  for (const r of rows) {
+    const from = hourOf(r.ReservationStart);
+    if (from == null) continue;
+    let to = hourOf(r.ReservationEnd);
+    if (to == null || to <= from) to = from + 1;        // 1h slot, or wrap past midnight
+    busy.push({ court: r.CourtLabel, from, to });
+  }
+  return {
+    ok: true,
+    isBusy: (court, hour) => busy.some((b) => b.court === court && b.from <= hour && hour < b.to),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Discovery — dump the live JSON shapes the HAR didn't capture, so the parsers
 // above (parseBookings, resolveOpponent, availability) can be confirmed.
 // ---------------------------------------------------------------------------
@@ -368,13 +435,64 @@ export async function dumpDiscovery(page, ctx, cfg) {
   ]);
   log('GET-LIST (my bookings) raw', listResp ? await listResp.json().catch(() => '<non-json>') : '<not captured>');
 
-  // availability member-expanded (whatever the bookings scheduler fetches)
-  const [availResp] = await Promise.all([
-    page.waitForResponse((r) => r.url().includes('/api/scheduler/member-expanded') &&
-      r.request().method() === 'GET' && r.status() === 200, { timeout: 25000 }).catch(() => null),
-    page.goto(`${BASE}/Online/Reservations/Bookings/${ORG_ID}`, { waitUntil: 'domcontentloaded' }),
-  ]);
-  log('MEMBER-EXPANDED (availability) raw', availResp ? await availResp.json().catch(() => '<non-json>') : '<not captured>');
+  // Availability — capture EVERY scheduler/reservation JSON XHR the bookings page
+  // fires (URL + sample), so we can identify which endpoint lists free/taken courts
+  // for a date and what query params it takes. Read-only; no booking actions.
+  const seen = [];
+  const onResp = async (r) => {
+    try {
+      if (r.request().method() !== 'GET') return;
+      const url = r.url();
+      if (!/scheduler|reservation|availab|expand|getreservations/i.test(url)) return;
+      if (!/json/i.test(r.headers()['content-type'] || '')) return;
+      seen.push({ url, reqHeaders: r.request().headers(), body: await r.json().catch(() => '<non-json>') });
+    } catch { /* ignore */ }
+  };
+  page.on('response', onResp);
+  await page.goto(`${BASE}/Online/Reservations/Bookings/${ORG_ID}?sId=${CUSTOM_SCHEDULER_ID}`,
+    { waitUntil: 'networkidle' }).catch(() => {});
+  await page.waitForTimeout(3000);
+  page.off('response', onResp);
+  if (!seen.length) log('SCHEDULER XHRs', '<none captured>');
+  for (const s of seen.slice(0, 8)) console.log(`\nFULL XHR URL: ${s.url}`);
+
+  // Probe availability for FUTURE dates by replaying the real member-expanded request
+  // with (a) its captured auth headers and (b) the date swapped inside jsonData
+  // (KendoDate/Date/startDate). Read-only. Jun 16 has a known Court 2 22:00 booking,
+  // so it doubles as a ground-truth check of the parse.
+  const me = seen.find((s) => /member-expanded/i.test(s.url));
+  const addDays = (d, n) => {
+    const [y, m, dd] = d.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1, dd)); t.setUTCDate(t.getUTCDate() + n);
+    return t.toISOString().slice(0, 10);
+  };
+  if (me) {
+    console.log('\nMEMBER-EXPANDED REQUEST HEADERS:', JSON.stringify(me.reqHeaders || {}));
+    const pick = ['authorization', 'x-requested-with', 'referer', 'accept', 'requestverificationtoken', 'x-csrf-token'];
+    const authHeaders = {};
+    for (const k of Object.keys(me.reqHeaders || {})) {
+      if (pick.includes(k.toLowerCase())) authHeaders[k] = me.reqHeaders[k];
+    }
+    let jdT = {};
+    try { jdT = JSON.parse(decodeURIComponent(new URL(me.url).searchParams.get('jsonData') || '{}')); } catch { /* */ }
+    for (const pd of [addDays(clubToday(), 3), addDays(clubToday(), 6)]) {
+      const [Y, M, D] = pd.split('-').map(Number);
+      const jd = { ...jdT, KendoDate: { Year: Y, Month: M, Day: D },
+        startDate: `${pd}T12:00:00.000Z`, Date: `${pd} 12:00:00 GMT` };
+      const u = new URL(me.url);
+      u.searchParams.set('jsonData', JSON.stringify(jd));
+      const r = await ctx.request.get(u.toString(),
+        { headers: { 'x-requested-with': 'XMLHttpRequest', accept: '*/*', ...authHeaders } }).catch(() => null);
+      const j = r ? await r.json().catch(() => null) : null;
+      const rows = (j && (j.Data || j.data)) || [];
+      const occ = rows.filter((x) => !x.IsCanceled).map((x) => ({
+        court: x.CourtLabel, start: x.ReservationStart, end: x.ReservationEnd, closed: x.IsCourtClosed }));
+      console.log(`\n===== ME REPLAY ${pd} (status ${r ? r.status() : 'ERR'}, ${rows.length} rows) =====`);
+      console.log(JSON.stringify(occ).slice(0, 1800));
+    }
+  } else {
+    console.log('\n[discovery] no member-expanded XHR captured — cannot probe availability.');
+  }
 
   // opponent search
   const name = cfg.opponents[0] || 'Angad';

@@ -21,9 +21,10 @@ America/Toronto, 6 days out), so you don't have to race for it manually.
 
 **Upgrade sweep** (separate workflow, a few times a day): scans your existing weekday
 bookings and moves any lower-preference slot (e.g. 10 PM, 8 PM) up to a better time
-(9 PM / 8 PM) if one has freed up — booking the better slot first, then cancelling the
-old one, so a reservation is never lost. Upgrades while you're **under** the 4-reservation
-cap; at-cap upgrades are skipped for now (safe-by-design).
+(9 PM / 8 PM) when one has freed up. It reads court availability first (read-only), so a
+reservation is never lost — under the cap it books the better slot then cancels the old;
+at the cap it cancels then rebooks the better slot, rolling back if needed. Works whether
+or not you're at the 4-reservation cap.
 
 ## Status
 

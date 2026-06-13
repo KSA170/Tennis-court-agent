@@ -15,9 +15,9 @@ better time. First-come (not a lottery). Login is username+password (a "Continue
 Google" button also exists but we use the password form).
 Daytime **upgrade sweep** (`CR_MODE=upgrade`, workflow `upgrade-tennis-court.yml`):
 scans existing weekday bookings and moves any lower-preference slot (e.g. 10 PM, 8 PM)
-up to a better one if it's free — **books the better slot first, then cancels the old**,
-so a reservation is never lost. UNDER-CAP upgrades are live; AT-CAP upgrades are skipped
-(would need the cap-error response verified + a safe swap) — see "Upgrade sweep" below.
+up to a better one when it's free. Availability is read first (read-only) so a
+reservation is never lost — see "Upgrade sweep" below. Both under-cap and at-cap
+upgrades are enabled.
 
 ## STATUS: end-to-end VERIFIED (2026-06-12)
 A live run booked Court 1 on 2026-06-18 2 PM vs Angad (`{"stage":"booked"}`) via the
@@ -110,18 +110,26 @@ open. That's the recommended next step if 9 PM prime slots are contested.
 
 ## Upgrade sweep (`runUpgradeSweep` in book.js; mode `upgrade`)
 Triggered by `upgrade-tennis-court.yml` a few times a day (and `workflow_dispatch`,
-dry-run default true). It logs in, reads my bookings, and for each future **weekday**
-booking whose hour is a preferred-but-not-top time, tries the better hours (best first)
-in court-preference order. Safe ordering: **book the better slot, then cancel the old**.
-- **Under the reservation cap:** fully enabled (book-first guarantees no loss).
-- **At the cap:** skipped with a note. To enable safely we need the cap-error response
-  verified (still a known unknown) so we can detect "slot free, only cap blocking" and
-  do a confirmed cancel→rebook with rollback. Build that after a live cap capture.
-- **Dry run** traces intended swaps but bookCourt is simulated, so it does NOT reflect
-  real availability (it will "succeed" on the first court) — use it to verify WHICH
-  bookings are treated as candidates, not whether a slot is actually free.
+dry-run default true). It logs in, reads my bookings, captures an availability probe,
+and for each future **weekday** booking whose hour is a preferred-but-not-top time,
+**reads court availability for that date first** and picks the best free (hour, court)
+in court-preference order. If none is free → skip (no changes).
+- **Availability source:** `member-expanded` on `backend.courtreserve.com`. We capture
+  the scheduler's live request (its `authorization` bearer + `RequestData` + jsonData
+  template) via `captureAvailabilityProbe`, then `getCourtAvailability` replays it per
+  date by swapping `jsonData.KendoDate`/`Date`/`startDate`. Response lists OCCUPIED
+  court-hours; a court is free at H if no row covers it (ReservationStart..End, local).
+- **Under the cap:** book the better slot, then cancel the old one.
+- **At the cap:** availability already confirms the target is free, so cancel the old
+  slot, book the better one, and ROLL BACK (rebook the original) if the rebook fails.
+- **Dry run is now a true preview:** availability is read for real; only the
+  book/cancel are simulated. So a dry-run upgrade only claims a swap if a slot is
+  genuinely free. Use it to preview before enabling the live schedule.
 - Opponent on the upgraded booking is the configured one (Angad, then Karam), same as
   the initial booking — it does not carry over a different opponent from the old slot.
+- Residual risk (tiny): the ~1–2 s between the availability read / cancel and the
+  rebook; rollback covers a failed rebook of the new slot, and the original slot was
+  just ours so re-booking it almost always succeeds.
 
 ## Next concrete step
 Let the new staggered schedule run and read the Actions log: which cron actually booted a

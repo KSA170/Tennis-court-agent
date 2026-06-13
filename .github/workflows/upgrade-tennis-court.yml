@@ -12,13 +12,11 @@ on:
         type: boolean
         default: true
   schedule:
-    # UTC; spread through Toronto daytime/evening (EDT shown). Modest cadence to
-    # avoid churn — a few checks a day is plenty to catch a freed-up slot.
-    - cron: '0 14 * * *'    # 10:00 EDT
-    - cron: '0 17 * * *'    # 13:00 EDT
-    - cron: '0 20 * * *'    # 16:00 EDT
-    - cron: '0 23 * * *'    # 19:00 EDT
-    - cron: '0 1 * * *'     # 21:00 EDT (prev day)
+    # Every 2 hours (even UTC hours). Covers Toronto daytime/evening year-round
+    # regardless of DST; the few overnight runs are cheap no-ops (read availability,
+    # change nothing). Avoids odd hours so it never coincides with the ~11:00 UTC
+    # booking window, and the shared concurrency group serializes them anyway.
+    - cron: '0 */2 * * *'
 
 concurrency:
   # Share the booking group so an upgrade sweep never runs concurrently with the
