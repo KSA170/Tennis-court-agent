@@ -14,7 +14,9 @@ export async function notify(cfg, result) {
       body: JSON.stringify({
         from: cfg.resendFrom,
         to: cfg.notifyEmail,
-        subject: `${result.ok ? '✅' : '❌'} Tennis booking — ${result.date} ${result.hour}`,
+        subject: result.stage === 'upgrade'
+          ? `${result.ok ? '✅' : '❌'} Tennis upgrade sweep`
+          : `${result.ok ? '✅' : '❌'} Tennis booking — ${result.date} ${result.hour}`,
         text: line,
       }),
     });
@@ -25,6 +27,12 @@ export async function notify(cfg, result) {
 }
 
 function summarize(r) {
+  if (r.stage === 'upgrade') {
+    if (!r.ok) return `Upgrade sweep failed — ${r.reason ?? r.error}.`;
+    return r.upgraded?.length
+      ? `Upgrade sweep: ${r.upgraded.join('; ')}.`
+      : `Upgrade sweep: nothing to change${r.reason ? ` (${r.reason})` : ''}.`;
+  }
   if (r.ok && r.stage === 'booked') {
     return `Booked ${r.court ?? 'a court'} at ${r.hour} on ${r.date}` +
       (r.opponent ? ` vs ${r.opponent}` : '') +

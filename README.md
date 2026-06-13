@@ -19,6 +19,12 @@ America/Toronto, 6 days out), so you don't have to race for it manually.
    **any existing 10 PM reservation** to free a slot, then books the better time.
 7. Emails you the outcome (optional).
 
+**Upgrade sweep** (separate workflow, a few times a day): scans your existing weekday
+bookings and moves any lower-preference slot (e.g. 10 PM, 8 PM) up to a better time
+(9 PM / 8 PM) if one has freed up — booking the better slot first, then cancelling the
+old one, so a reservation is never lost. Upgrades while you're **under** the 4-reservation
+cap; at-cap upgrades are skipped for now (safe-by-design).
+
 ## Status
 
 ✅ Everything is built: form login, availability/booking via the portal's own APIs,
@@ -84,6 +90,7 @@ In the GitHub repo: **Settings → Secrets and variables → Actions**.
 | `CR_OPPONENTS` | `Angad Dev Singh,Karam Adam` | Tried in order |
 | `CR_MAX_RESERVATIONS` | `4` | Club cap |
 | `CR_CANCEL_HOUR` | `10:00 PM` | Hour to cancel when at the cap |
+| `CR_MODE` | `book` | `book` = grab a slot at the open; `upgrade` = daytime upgrade sweep |
 | `CR_NOTIFY_EMAIL` | *(none)* | Where to email results |
 | `RESEND_FROM` | *(none)* | e.g. `Tennis Bot <bot@yourdomain.com>` |
 
