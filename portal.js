@@ -368,13 +368,26 @@ export async function dumpDiscovery(page, ctx, cfg) {
   ]);
   log('GET-LIST (my bookings) raw', listResp ? await listResp.json().catch(() => '<non-json>') : '<not captured>');
 
-  // availability member-expanded (whatever the bookings scheduler fetches)
-  const [availResp] = await Promise.all([
-    page.waitForResponse((r) => r.url().includes('/api/scheduler/member-expanded') &&
-      r.request().method() === 'GET' && r.status() === 200, { timeout: 25000 }).catch(() => null),
-    page.goto(`${BASE}/Online/Reservations/Bookings/${ORG_ID}`, { waitUntil: 'domcontentloaded' }),
-  ]);
-  log('MEMBER-EXPANDED (availability) raw', availResp ? await availResp.json().catch(() => '<non-json>') : '<not captured>');
+  // Availability — capture EVERY scheduler/reservation JSON XHR the bookings page
+  // fires (URL + sample), so we can identify which endpoint lists free/taken courts
+  // for a date and what query params it takes. Read-only; no booking actions.
+  const seen = [];
+  const onResp = async (r) => {
+    try {
+      if (r.request().method() !== 'GET') return;
+      const url = r.url();
+      if (!/scheduler|reservation|availab|expand|getreservations/i.test(url)) return;
+      if (!/json/i.test(r.headers()['content-type'] || '')) return;
+      seen.push({ url, body: await r.json().catch(() => '<non-json>') });
+    } catch { /* ignore */ }
+  };
+  page.on('response', onResp);
+  await page.goto(`${BASE}/Online/Reservations/Bookings/${ORG_ID}?sId=${CUSTOM_SCHEDULER_ID}`,
+    { waitUntil: 'networkidle' }).catch(() => {});
+  await page.waitForTimeout(3000);
+  page.off('response', onResp);
+  if (!seen.length) log('SCHEDULER XHRs', '<none captured>');
+  for (const s of seen.slice(0, 8)) log(`SCHEDULER XHR — ${s.url.slice(0, 200)}`, s.body);
 
   // opponent search
   const name = cfg.opponents[0] || 'Angad';
