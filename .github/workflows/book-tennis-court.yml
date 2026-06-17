@@ -19,7 +19,15 @@ on:
         description: 'One-off hour override, e.g. "8:00 PM" (default: 9:00 PM)'
         type: string
         default: ''
-  # Booking opens 7:00 AM America/Toronto. Crons are UTC and DST-blind, so we cover
+  # PREFERRED on-time trigger: an external scheduler (e.g. cron-job.org) POSTs a
+  # repository_dispatch ~6:50 AM America/Toronto. Unlike GitHub's own cron (which is
+  # routinely delayed 30 min – several HOURS — see the schedule note below), a
+  # repository_dispatch is delivered within seconds, so index.js can arm and sleep to
+  # exactly 7:00:00. event_name != 'workflow_dispatch', so CR_FORCE_NOW stays unset and
+  # the normal timed-arming path runs.
+  repository_dispatch:
+    types: [book-now]
+  # BACKUP only. Booking opens 7:00 AM America/Toronto. Crons are UTC and DST-blind, so we cover
   # BOTH seasons: open is 11:00 UTC (EDT, Mar–Nov) and 12:00 UTC (EST, Nov–Mar).
   # index.js exits if a runner boots too early, arms+sleeps if it boots in the
   # arming window, and STILL attempts the booking if it boots late (GitHub cron is
