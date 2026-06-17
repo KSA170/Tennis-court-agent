@@ -24,9 +24,10 @@ A live run booked Court 1 on 2026-06-18 2 PM vs Angad (`{"stage":"booked"}`) via
 target_date/target_hour workflow inputs — login, tokens, form render, payload, and the
 real POST all confirmed. (That test reservation should be cancelled in the portal.)
 A live 9 PM attempt returned the genuine per-court "Sorry, no available courts for the
-time requested." — that's what book-failed looks like when slots are taken. Remaining
-unknowns: the exact wording of the at-cap error (CAP_HINTS regex untested live) and
-Karam's member record.
+time requested." — that's what book-failed looks like when slots are taken. The at-cap
+error wording is now confirmed live: "<name> restricted to N outstanding reservation(s)"
+— `CAP_HINTS` matches it (via `restrict`/`outstanding reservation`) so the cancel-a-10 PM
+fallback fires. Remaining unknown: Karam's member record.
 
 ## What WORKS (verified on live runs)
 - **Login** — `src/auth.js`. Form fields are `input[name="email"]` / `input[name="password"]`,

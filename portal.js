@@ -219,7 +219,9 @@ function appendMember(params, i, m) {
   params.append(`SelectedMembers[${i}].PaidAmt`, '');
 }
 
-const CAP_HINTS = /maximum|max(imum)?\s*reservation|reached|limit|too many|exceed|allowed to (book|make)/i;
+// Court Reserve's at-cap message is "<name> restricted to N outstanding
+// reservation(s)" (confirmed live); the others are defensive variants.
+const CAP_HINTS = /maximum|max(imum)?\s*reservation|reached|limit|too many|exceed|restrict|outstanding reservation|allowed to (book|make)/i;
 
 function interpretBookingResponse(status, body, court, opponent) {
   let json = null;
