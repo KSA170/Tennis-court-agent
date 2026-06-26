@@ -8,7 +8,7 @@ import {
   courtsToTry, dumpDiscovery, getSessionTokens,
   captureAvailabilityProbe, getCourtAvailability,
 } from './portal.js';
-import { parseHour, clubToday, isWeekend } from './time.js';
+import { parseHour, clubToday, isWeekend, weekdayOf } from './time.js';
 import { membersConfigured, COURTS } from './constants.js';
 
 /**
@@ -37,11 +37,13 @@ export async function prepareBooking(cfg, targetDate) {
 
     const bookings = await getMyBookings(page);
 
-    // Resolve an opponent (first one that exists in the club directory).
-    const opponent = await firstOpponent(ctx, cfg.opponents);
+    // Resolve an opponent (first one that exists in the club directory). Monday
+    // targets use the Monday-only list (Karam).
+    const names = opponentsForDate(cfg, targetDate);
+    const opponent = await firstOpponent(ctx, names);
     if (!opponent) {
       return { browser, done: { ok: false, stage: 'no-opponent', ...base,
-        reason: `none of [${cfg.opponents.join(', ')}] could be found in the club directory` } };
+        reason: `none of [${names.join(', ')}] could be found in the club directory` } };
     }
 
     // Per-session token the create-reservation form requires.
@@ -150,10 +152,13 @@ export async function runUpgradeSweep(cfg) {
   try {
     const { ctx, page } = await login(browser, cfg);
     let bookings = await getMyBookings(page);
-    const opponent = await firstOpponent(ctx, cfg.opponents);
-    if (!opponent) {
-      return { ok: false, ...base, reason: `no opponent found among [${cfg.opponents.join(', ')}]` };
-    }
+    // Opponent is resolved per booking (Monday games use Karam), cached by name-list.
+    const oppCache = new Map();
+    const resolveOpp = async (nms) => {
+      const key = nms.join('|');
+      if (!oppCache.has(key)) oppCache.set(key, await firstOpponent(ctx, nms));
+      return oppCache.get(key);
+    };
     const { requestData } = await getSessionTokens(page);
     const probe = await captureAvailabilityProbe(page); // for read-only availability checks
 
@@ -177,6 +182,11 @@ export async function runUpgradeSweep(cfg) {
       // Better hours we don't already hold on that date.
       const betterHours = prefs.slice(0, rank).filter((p) => !hasSlot(bookings, b.localDate, p.hour));
       if (!betterHours.length) continue;
+
+      // Opponent for this booking's date (Monday → Karam).
+      const oppNames = opponentsForDate(cfg, b.localDate);
+      const opponent = await resolveOpp(oppNames);
+      if (!opponent) { skipped.push(`${b.localDate} ${fromLabel} — opponent not found among [${oppNames.join(', ')}]`); continue; }
 
       // Read availability for the date and pick the best free (hour, court).
       const avail = await getCourtAvailability(ctx, probe, b.localDate);
@@ -243,6 +253,12 @@ async function tryAllCourts(page, ctx, cfg, dateStr, hour, opponent, requestData
     reasons.push(`${court.label}: ${r.reason}`);
   }
   return { ok: false, blockedByCap: false, reason: `no court bookable — ${reasons.join('; ')}` };
+}
+
+/** Opponent names to try for a target date — Monday games use the Monday-only list. */
+function opponentsForDate(cfg, dateStr) {
+  const monday = weekdayOf(dateStr) === 1; // 0=Sun … 1=Mon … 6=Sat
+  return monday && cfg.mondayOpponents.length ? cfg.mondayOpponents : cfg.opponents;
 }
 
 async function firstOpponent(ctx, names) {
