@@ -48,6 +48,9 @@ export function loadConfig() {
     // --- Opponents (tried in order until one can be added) ---
     opponents: envOr('CR_OPPONENTS', 'Angad Dev Singh,Karam Adam')
       .split(',').map((s) => s.trim()).filter(Boolean),
+    // Opponent override for Monday games (the user plays Karam on Mondays).
+    mondayOpponents: envOr('CR_MONDAY_OPPONENTS', 'Karam Adam')
+      .split(',').map((s) => s.trim()).filter(Boolean),
 
     // --- Max-reservation handling ---
     maxReservations: Number(envOr('CR_MAX_RESERVATIONS', 4)),
