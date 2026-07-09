@@ -12,7 +12,7 @@ America/Toronto, 6 days out), so you don't have to race for it manually.
 3. Logs into the portal and checks you don't already hold a preferred slot (idempotent).
 4. Opens the newly-released day (**today + 6 days**) and books the **best available
    preferred time** — **9 PM, else 8 PM, else 10 PM** — trying courts in order
-   **2, 3, 6, 4, 5, 1**.
+   **6, 2, 3, 4, 5, 1**.
 5. Books it as a **Singles** game and adds your opponent — tries **Angad Dev Singh**,
    then **Karam Adam** (on **Mondays**, uses **Karam Adam** only).
 6. **Max-4 handling:** if the club's 4-reservation cap blocks the booking, it cancels
@@ -87,7 +87,7 @@ In the GitHub repo: **Settings → Secrets and variables → Actions**.
 | `CR_WEEKDAYS_ONLY` | `1` | `1` = only book Mon–Fri targets; `0` = allow weekends |
 | `CR_DURATION_MIN` | `60` | Court duration |
 | `CR_RESERVATION_TYPE` | `Singles` | Exact label in the portal |
-| `CR_COURT_PREFERENCE` | `Court 2,Court 3,Court 6,Court 4,Court 5,Court 1` | Tried in order; bare numbers OK |
+| `CR_COURT_PREFERENCE` | `Court 6,Court 2,Court 3,Court 4,Court 5,Court 1` | Tried in order; bare numbers OK |
 | `CR_OPPONENTS` | `Angad Dev Singh,Karam Adam` | Tried in order |
 | `CR_MONDAY_OPPONENTS` | `Karam Adam` | Opponent(s) for **Monday** games (overrides `CR_OPPONENTS` that day) |
 | `CR_MAX_RESERVATIONS` | `4` | Club cap |

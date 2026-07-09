@@ -9,7 +9,7 @@ truth for the portal's mechanics.
 Auto-book the best available evening court at Don Mills (Court Reserve) the instant the
 booking window opens (7:00 AM America/Toronto, 6 days out). **Weekdays only (Mon–Fri).**
 Preferred times in order: **9 PM → 8 PM → 10 PM** (`CR_TARGET_HOURS`); court order
-**2,3,6,4,5,1** (`CR_COURT_PREFERENCE`). Single game vs **Angad Dev Singh** or **Karam
+**6,2,3,4,5,1** (`CR_COURT_PREFERENCE`). Single game vs **Angad Dev Singh** or **Karam
 Adam** — except **Monday** games use **Karam Adam** only (`CR_MONDAY_OPPONENTS`). Max 4
 reservations: if at the cap, cancel any **10 PM** reservation and book the better time. First-come (not a lottery). Login is username+password (a "Continue with
 Google" button also exists but we use the password form).

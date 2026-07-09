@@ -24,7 +24,7 @@ export function loadConfig() {
     .split(',').map((s) => s.trim()).filter(Boolean);
 
   // Court order of preference. Bare numbers ("2") are accepted as "Court 2".
-  const courtPreference = envOr('CR_COURT_PREFERENCE', 'Court 2,Court 3,Court 6,Court 4,Court 5,Court 1')
+  const courtPreference = envOr('CR_COURT_PREFERENCE', 'Court 6,Court 2,Court 3,Court 4,Court 5,Court 1')
     .split(',').map((s) => s.trim()).filter(Boolean)
     .map((s) => (/^\d+$/.test(s) ? `Court ${s}` : s));
 
